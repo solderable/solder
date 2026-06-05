@@ -83,25 +83,6 @@ solder --resume session-abc123
 solder --url http://localhost:4310
 ```
 
-## Environment Variables
-
-| Variable | Purpose |
-| --- | --- |
-| `SOLDERSLACK_REMOTE_TUI_API_KEY` | API key for authentication. If omitted, Solder reads the stored key or prompts for one. |
-| `SOLDERSLACK_REMOTE_TUI_URL` | Default websocket URL when `--url` is not passed. |
-| `SOLDERSLACK_REMOTE_TUI_ARTIFACT_DIR` | Directory where remote file artifacts are saved. If omitted, artifacts are saved into the local project directory. |
-| `SOLDERSLACK_REMOTE_TUI_DEBUG` | Set to `1`, `true`, `yes`, or `on` to write remote TUI debug logs. |
-| `SOLDERSLACK_REMOTE_TUI_DEBUG_LOG` | Explicit debug log path. Also enables debug logging. |
-| `XDG_CONFIG_HOME` | Overrides the root config directory used for saved Solder settings. |
-
-Saved config lives at:
-
-```text
-~/.config/solderslack/remote-tui.json
-```
-
-The file stores the API key and optional URL with restricted permissions.
-
 ## Local Project Files
 
 When Solder starts, it prepares the current directory as a project workspace. A typical project contains:
@@ -226,8 +207,6 @@ circuit.kicad_sch
 circuit.png
 ```
 
-If `SOLDERSLACK_REMOTE_TUI_ARTIFACT_DIR` is set, artifacts are written under that directory instead, grouped by project or session ID.
-
 ## Common Workflows
 
 Create a new project:
@@ -309,18 +288,6 @@ bun run build:remote-tui -- --target bun-darwin-arm64
 bun run build:remote-tui -- --target bun-linux-x64
 ```
 
-## Developer CLI Versus `solder`
-
-This repository also has a broader developer CLI at:
-
-```bash
-bun run cli/index.ts <command>
-```
-
-That CLI includes commands such as `compile`, `schematic`, `eval`, `bom-source`, `quote`, and `export-jlcpcb`. The packaged `solder` binary is intentionally smaller: it is the end-user remote chat client built from `cli/remoteTuiEntrypoint.ts`.
-
-If you need the local developer commands, run them through Bun from the repo checkout. If you are explaining the installed command to an end user, document `solder`, not the repo-only `bun run cli/index.ts` surface.
-
 ## Troubleshooting
 
 Check the installed version:
@@ -333,31 +300,6 @@ Use a different server:
 
 ```bash
 solder --url http://localhost:4310
-```
-
-Set the API key without a prompt:
-
-```bash
-export SOLDERSLACK_REMOTE_TUI_API_KEY=slrt_...
-solder
-```
-
-Enable debug logging:
-
-```bash
-SOLDERSLACK_REMOTE_TUI_DEBUG=1 solder
-```
-
-The default debug log path is:
-
-```text
-~/.config/solderslack/remote-tui-debug.jsonl
-```
-
-If Solder cannot find or parse its saved config, remove or fix:
-
-```text
-~/.config/solderslack/remote-tui.json
 ```
 
 If a directory is not intended to be a Solder project, start `solder` from the directory you want the agent to inspect and modify.
