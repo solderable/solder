@@ -1,7 +1,363 @@
-# solder
+# Solder CLI
 
-Public binary releases for the Solderable `solder` CLI.
+Solder is the Solderable command-line app for building electronics projects with an AI agent. The `solder` binary opens a terminal chat session, connects to the Solderable backend, and lets the agent help create or modify a local KiCad/SKiDL project from your design decisions.
 
-The release assets in this repository are built from Solderable's private core
-engine repository. Download the binary for your platform from the Releases page
-and verify it with the matching `.sha256` file.
+Use it when you want to:
+
+- describe a circuit you want to build
+- search for sourceable components
+- pick parts by constraints such as package, voltage, stock, and LCSC code
+- compile SKiDL into a KiCad netlist
+- generate or reroute a KiCad schematic
+- review datasheets and component details
+- iterate on a project through chat instead of editing every file by hand
+
+## Quick Start
+
+```bash
+solder
+```
+
+On first run, Solder asks for a Solderable API key:
+
+```text
+Solderable API key>
+```
+
+After the key is saved, the CLI opens an interactive chat prompt:
+
+```text
+you>
+```
+
+From there, describe what you want:
+
+```text
+Build a 3.3 V ESP32 sensor board with USB-C power, a battery charger, and an I2C temperature sensor.
+```
+
+Solder keeps the local project tied to the current directory. If the directory is empty or missing project scaffolding, the CLI initializes the files needed for a Solderable KiCad project.
+
+## What The Binary Does
+
+The packaged `solder` binary is a remote chat client. It does not run the full schematic agent locally. Instead, it:
+
+1. starts a terminal UI
+2. authenticates with your Solderable API key
+3. connects to the Solderable websocket service
+4. creates or reuses a local project identity in `.solder/project.json`
+5. sends your chat messages and attachments to the remote agent
+6. lets the remote agent request local project reads, writes, shell commands, and patches
+7. saves generated artifacts, such as schematics or images, back into your project directory
+
+The default server is:
+
+```text
+wss://sch.up.railway.app/remote-tui
+```
+
+The default command is just:
+
+```bash
+solder
+```
+
+## Options
+
+```bash
+solder [options]
+```
+
+| Option | Description |
+| --- | --- |
+| `--url <url>` | Connect to a different Solderable websocket server. `http` and `https` URLs are accepted and converted to websocket URLs by the transport. |
+| `--resume <id>` | Resume a previous chat session. The CLI prints a resume command when you exit after connecting. |
+| `--version`, `-v` | Print the installed `solder` version. |
+| `--help`, `-h` | Print CLI help. |
+
+Examples:
+
+```bash
+solder --version
+solder --resume session-abc123
+solder --url http://localhost:4310
+```
+
+## Environment Variables
+
+| Variable | Purpose |
+| --- | --- |
+| `SOLDERSLACK_REMOTE_TUI_API_KEY` | API key for authentication. If omitted, Solder reads the stored key or prompts for one. |
+| `SOLDERSLACK_REMOTE_TUI_URL` | Default websocket URL when `--url` is not passed. |
+| `SOLDERSLACK_REMOTE_TUI_ARTIFACT_DIR` | Directory where remote file artifacts are saved. If omitted, artifacts are saved into the local project directory. |
+| `SOLDERSLACK_REMOTE_TUI_DEBUG` | Set to `1`, `true`, `yes`, or `on` to write remote TUI debug logs. |
+| `SOLDERSLACK_REMOTE_TUI_DEBUG_LOG` | Explicit debug log path. Also enables debug logging. |
+| `XDG_CONFIG_HOME` | Overrides the root config directory used for saved Solder settings. |
+
+Saved config lives at:
+
+```text
+~/.config/solderslack/remote-tui.json
+```
+
+The file stores the API key and optional URL with restricted permissions.
+
+## Local Project Files
+
+When Solder starts, it prepares the current directory as a project workspace. A typical project contains:
+
+```text
+circuit.py
+__init__.py
+circuit.net
+circuit.kicad_sch
+circuit.kicad_pro
+circuit.kicad_pcb
+sym-lib-table
+fp-lib-table
+libs/
+  Library.kicad_sym
+  Library.pretty/
+.solder/
+  project.json
+```
+
+`.solder/project.json` maps each remote server URL to a stable project ID. That lets the hosted agent know that future sessions in the same folder refer to the same local project.
+
+By default, Solder excludes client state and large/unrelated folders from remote file reads:
+
+```text
+.git/**
+.solder/**
+agent-runs/**
+node_modules/**
+.claude/**
+```
+
+## Chat Workflow
+
+You can ask Solder for design help in normal language:
+
+```text
+Find a sourceable USB-C connector suitable for hand assembly.
+```
+
+```text
+Add a buck regulator that can take 12 V input and output 3.3 V at 1 A.
+```
+
+```text
+Generate the schematic and explain any parts I still need to choose.
+```
+
+The remote agent can use local tools through the client. When needed, it can:
+
+- read selected project files
+- write generated project files
+- apply patches inside the project directory
+- run shell commands in the project directory
+- return file artifacts such as `circuit.kicad_sch`, `circuit.net`, or preview images
+
+All file operations are constrained to the active project directory.
+
+## Slash Commands
+
+The chat prompt supports slash commands for common workflows:
+
+| Command | Description |
+| --- | --- |
+| `/compile` | Compile a SKiDL file to a netlist. Defaults to `circuit.py`. |
+| `/schematic` | Generate or reroute the project schematic. |
+| `/schematic single-group` | Generate `circuit.kicad_sch` as one layout group. |
+| `/schematic fresh-layout` | Force a fresh layout pass from `circuit.net`. |
+| `/schematic regenerate` | Regenerate `circuit.kicad_sch` from `circuit.net`. |
+| `/schematic reroute` | Reroute the existing `circuit.kicad_sch`. |
+| `/mode build` | Allow the agent to build and edit the project. |
+| `/mode ask` | Ask questions without editing the project. |
+| `/style engineer` | Use precise engineering guidance. |
+| `/style concise` | Keep responses brief and direct. |
+| `/style noob` | Explain concepts for a beginner. |
+| `/model gpt-5.5` | Use GPT-5.5 fast mode with xhigh reasoning. |
+| `/model opus-4.8` | Use Opus 4.8 with high reasoning. |
+| `/datasheet status [C12345]` | Show datasheet and expert-cache status. |
+| `/datasheet populate` | Populate missing datasheet and expert caches. |
+| `/datasheet refresh C12345` | Force-refresh component expert data for a part. |
+| `/cancel` | Cancel the current run. |
+| `/exit` | Exit the chat session. |
+
+## Resuming A Session
+
+When you exit after connecting, Solder prints a command like:
+
+```bash
+solder --resume session-abc123
+```
+
+Run that command from the same project directory to continue the conversation.
+
+If you connected to a custom server, the resume command includes `--url`:
+
+```bash
+solder --url http://localhost:4310 --resume session-abc123
+```
+
+## Attachments
+
+The terminal UI can forward image and PDF attachments to the remote agent. Attachments are sent as websocket-safe payloads with filename, media type, and byte size metadata.
+
+Use attachments when asking Solder to interpret:
+
+- a datasheet excerpt
+- a pinout image
+- a reference schematic
+- a board or wiring photo
+- a screenshot of an error
+
+## Generated Artifacts
+
+When the remote agent returns files, Solder saves them locally and prints the path. By default, artifacts are written into the active project directory.
+
+Common generated files include:
+
+```text
+circuit.py
+circuit.net
+circuit.kicad_sch
+circuit.png
+```
+
+If `SOLDERSLACK_REMOTE_TUI_ARTIFACT_DIR` is set, artifacts are written under that directory instead, grouped by project or session ID.
+
+## Common Workflows
+
+Create a new project:
+
+```bash
+mkdir my-board
+cd my-board
+solder
+```
+
+Then say:
+
+```text
+Create a low-power BLE environmental sensor with USB-C charging and a single-cell LiPo.
+```
+
+Search for a component:
+
+```text
+Find a sourceable 3.3 V regulator for 500 mA output in a small hand-solderable package.
+```
+
+Generate a schematic:
+
+```text
+Use the selected parts and generate the schematic.
+```
+
+Or use the slash command:
+
+```text
+/schematic
+```
+
+Compile the SKiDL project:
+
+```text
+/compile
+```
+
+Reroute an existing schematic:
+
+```text
+/schematic reroute
+```
+
+Ask without editing:
+
+```text
+/mode ask
+Review this design and tell me what is risky before changing anything.
+```
+
+## Building And Installing From This Repo
+
+For development builds, the repo compiles the remote chat entrypoint into `dist/solder`:
+
+```bash
+bun run build:remote-tui
+bun run install:solder
+```
+
+`install:solder` installs the binary as:
+
+```text
+~/.local/bin/solder
+```
+
+If that directory is not on `PATH`, add it and then verify:
+
+```bash
+solder --version
+```
+
+The build script supports cross-target compilation through Bun:
+
+```bash
+bun run build:remote-tui -- --target bun-darwin-arm64
+bun run build:remote-tui -- --target bun-linux-x64
+```
+
+## Developer CLI Versus `solder`
+
+This repository also has a broader developer CLI at:
+
+```bash
+bun run cli/index.ts <command>
+```
+
+That CLI includes commands such as `compile`, `schematic`, `eval`, `bom-source`, `quote`, and `export-jlcpcb`. The packaged `solder` binary is intentionally smaller: it is the end-user remote chat client built from `cli/remoteTuiEntrypoint.ts`.
+
+If you need the local developer commands, run them through Bun from the repo checkout. If you are explaining the installed command to an end user, document `solder`, not the repo-only `bun run cli/index.ts` surface.
+
+## Troubleshooting
+
+Check the installed version:
+
+```bash
+solder --version
+```
+
+Use a different server:
+
+```bash
+solder --url http://localhost:4310
+```
+
+Set the API key without a prompt:
+
+```bash
+export SOLDERSLACK_REMOTE_TUI_API_KEY=slrt_...
+solder
+```
+
+Enable debug logging:
+
+```bash
+SOLDERSLACK_REMOTE_TUI_DEBUG=1 solder
+```
+
+The default debug log path is:
+
+```text
+~/.config/solderslack/remote-tui-debug.jsonl
+```
+
+If Solder cannot find or parse its saved config, remove or fix:
+
+```text
+~/.config/solderslack/remote-tui.json
+```
+
+If a directory is not intended to be a Solder project, start `solder` from the directory you want the agent to inspect and modify.
