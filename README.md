@@ -2,6 +2,22 @@
 
 Solder is the Solderable command-line app for building electronics projects with an AI agent. The `solder` binary opens a terminal chat session, connects to the Solderable backend, and lets the agent help create or modify a local KiCad/SKiDL project from your design decisions.
 
+The release assets in this repository are built from Solderable's private core engine repository.
+
+## Install
+
+On macOS, download and run the latest installer with:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/solderable/solder/main/install-solder-release.sh | bash
+```
+
+Then run:
+
+```sh
+solder --version
+```
+
 Use it when you want to:
 
 - describe a circuit you want to build
@@ -259,47 +275,3 @@ Ask without editing:
 /mode ask
 Review this design and tell me what is risky before changing anything.
 ```
-
-## Building And Installing From This Repo
-
-For development builds, the repo compiles the remote chat entrypoint into `dist/solder`:
-
-```bash
-bun run build:remote-tui
-bun run install:solder
-```
-
-`install:solder` installs the binary as:
-
-```text
-~/.local/bin/solder
-```
-
-If that directory is not on `PATH`, add it and then verify:
-
-```bash
-solder --version
-```
-
-The build script supports cross-target compilation through Bun:
-
-```bash
-bun run build:remote-tui -- --target bun-darwin-arm64
-bun run build:remote-tui -- --target bun-linux-x64
-```
-
-## Troubleshooting
-
-Check the installed version:
-
-```bash
-solder --version
-```
-
-Use a different server:
-
-```bash
-solder --url http://localhost:4310
-```
-
-If a directory is not intended to be a Solder project, start `solder` from the directory you want the agent to inspect and modify.
