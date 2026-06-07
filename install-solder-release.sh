@@ -120,7 +120,7 @@ cleanup() {
 trap cleanup EXIT
 
 echo "Downloading solder $release_tag for macOS $release_arch"
-curl -fsSL "$package_url" -o "$package_zip"
+curl -fL --progress-bar "$package_url" -o "$package_zip"
 mkdir -p "$extract_dir"
 ditto -x -k "$package_zip" "$extract_dir"
 
