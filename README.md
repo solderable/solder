@@ -28,6 +28,47 @@ Use it when you want to:
 - review datasheets and component details
 - iterate on a project through chat instead of editing every file by hand
 
+## Install
+
+macOS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/solderable/solder/main/install.sh | bash
+```
+
+Install a specific release:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/solderable/solder/main/install.sh | bash -s -- --version 0.1.13
+```
+
+The macOS installer downloads the matching `solder-<version>-macos-<arch>.zip` release asset, installs the CLI to `~/.local/bin/solder`, and installs `SolderCAD.app` beside the CLI and into `~/Applications/SolderCAD.app` when possible.
+
+Windows PowerShell:
+
+```powershell
+iwr https://raw.githubusercontent.com/solderable/solder/main/install.ps1 -OutFile install.ps1
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+Install a specific release:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.1.13
+```
+
+The Windows installer downloads `solder-<version>-windows-x64.zip`, installs to `$env:LOCALAPPDATA\Solder`, adds the installed `bin` directory to the user `PATH` if needed, and sets user `KICAD_APP_PATH` and `KICAD_CLI_PATH` variables for the bundled SolderCAD tools.
+
+Both installers support dry-run mode:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/solderable/solder/main/install.sh | bash -s -- --dry-run
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -DryRun
+```
+
 ## Quick Start
 
 ```bash
