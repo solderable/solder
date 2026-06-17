@@ -30,11 +30,18 @@ curl -fsSL https://raw.githubusercontent.com/solderable/solder/main/install.sh |
 
 The macOS installer downloads the matching `solder-<version>-macos-<arch>.zip` release asset, installs the CLI to `~/.local/bin/solder`, and installs `SolderCAD.app` beside the CLI and into `~/Applications/SolderCAD.app` when possible.
 
-Windows PowerShell:
+Windows from `cmd.exe`:
+
+```cmd
+powershell -ExecutionPolicy Bypass -Command "Invoke-WebRequest -Uri https://raw.githubusercontent.com/solderable/solder/main/install.ps1 -OutFile install.ps1"
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+Windows from PowerShell:
 
 ```powershell
-iwr https://raw.githubusercontent.com/solderable/solder/main/install.ps1 -OutFile install.ps1
-powershell -ExecutionPolicy Bypass -File .\install.ps1
+Invoke-WebRequest -Uri https://raw.githubusercontent.com/solderable/solder/main/install.ps1 -OutFile install.ps1
+.\install.ps1
 ```
 
 Install a specific release:
