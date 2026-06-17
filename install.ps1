@@ -146,13 +146,13 @@ $archivePath = Join-Path $tempRoot $assetName
 $extractDir = Join-Path $tempRoot "extract"
 
 try {
-    New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
 
     Write-Host "Downloading $downloadUrl"
     Invoke-WebRequest -Uri $downloadUrl -OutFile $archivePath -Headers @{ "User-Agent" = "solder-installer" }
 
     Write-Host "Extracting $assetName"
-    Expand-Archive -LiteralPath $archivePath -DestinationPath $extractDir -Force
+    Expand-Archive -LiteralPath $archivePath -DestinationPath $extractDir
 
     $payloadRoots = @(Get-ChildItem -LiteralPath $extractDir -Directory)
     if ($payloadRoots.Count -ne 1) {
