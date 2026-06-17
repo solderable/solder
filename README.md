@@ -4,21 +4,7 @@ Solder is the Solderable command-line app for building electronics projects with
 
 The release assets in this repository are built from Solderable's private core engine repository.
 
-## Install
-
-On macOS, download and run the latest installer with:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/solderable/solder/main/install-solder-release.sh | bash
-```
-
-Then run:
-
-```sh
-solder --version
-```
-
-Use it when you want to:
+Use Solder when you want to:
 
 - describe a circuit you want to build
 - search for sourceable components

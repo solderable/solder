@@ -1,0 +1,66 @@
+name: Release Smoke Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release tag to test
+        required: true
+        default: "0.1.13"
+
+jobs:
+  macos:
+    name: macOS remote TUI binary
+    runs-on: macos-latest
+    steps:
+      - name: Download release asset
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          asset="solder-${VERSION}-macos-arm64.zip"
+          curl -fL -o "$asset" "https://github.com/solderable/solder/releases/download/${VERSION}/${asset}"
+          unzip -q "$asset" -d release
+
+      - name: Run solder binary
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          bin="release/solder-${VERSION}-macos-arm64/solder"
+          test -x "$bin"
+          "$bin" --version
+          "$bin" --help
+
+  windows:
+    name: Windows remote TUI binary
+    runs-on: windows-latest
+    steps:
+      - name: Download release asset
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = "${{ inputs.version }}"
+          $asset = "solder-$version-windows-x64.zip"
+          Invoke-WebRequest `
+            -Uri "https://github.com/solderable/solder/releases/download/$version/$asset" `
+            -OutFile $asset
+          Expand-Archive -LiteralPath $asset -DestinationPath release -Force
+
+      - name: Run solder binary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = "${{ inputs.version }}"
+          $bin = Join-Path "release" "solder-$version-windows-x64\solder.exe"
+          if (-not (Test-Path -LiteralPath $bin -PathType Leaf)) {
+            throw "Missing solder.exe at $bin"
+          }
+          & $bin --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "solder.exe --version exited with $LASTEXITCODE"
+          }
+          & $bin --help
+          if ($LASTEXITCODE -ne 0) {
+            throw "solder.exe --help exited with $LASTEXITCODE"
+          }
