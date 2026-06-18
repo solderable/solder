@@ -121,6 +121,15 @@ function Expand-ZipArchive {
     [System.IO.Compression.ZipFile]::ExtractToDirectory($ArchivePath, $DestinationPath)
 }
 
+function Resolve-ShortTempRoot {
+    if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+        Fail "USERPROFILE is not set; cannot choose a short extraction path."
+    }
+
+    $shortId = [System.Guid]::NewGuid().ToString("N").Substring(0, 8)
+    return Join-Path (Join-Path $env:USERPROFILE "sld") $shortId
+}
+
 Assert-WindowsX64
 
 if ([string]::IsNullOrWhiteSpace($Version)) {
@@ -152,7 +161,7 @@ KICAD_CLI_PATH:  $kicadCliPath
     exit 0
 }
 
-$tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("solder-install-" + [System.Guid]::NewGuid().ToString("N"))
+$tempRoot = Resolve-ShortTempRoot
 $archivePath = Join-Path $tempRoot $assetName
 $extractDir = Join-Path $tempRoot "extract"
 
