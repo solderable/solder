@@ -87,8 +87,16 @@ jobs:
           $root = Join-Path "release" "solder-$version-windows-x64"
           $binDir = Join-Path $root "SolderCAD\bin"
           $kicadCli = Join-Path $binDir "kicad-cli.exe"
+          $python = Join-Path $binDir "python.exe"
+          $encodingInit = Join-Path $binDir "Lib\encodings\__init__.py"
           if (-not (Test-Path -LiteralPath $kicadCli -PathType Leaf)) {
             throw "Missing kicad-cli.exe at $kicadCli"
+          }
+          if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
+            throw "Missing bundled python.exe at $python"
+          }
+          if (-not (Test-Path -LiteralPath $encodingInit -PathType Leaf)) {
+            throw "Missing bundled Python encodings at $encodingInit"
           }
 
           $kicadVersion = (& $kicadCli version 2>&1 | Out-String).Trim()
@@ -96,6 +104,12 @@ jobs:
             throw "kicad-cli.exe version exited with $LASTEXITCODE"
           }
           Write-Host $kicadVersion
+
+          $pythonEncoding = (& $python -c "import sys, encodings; print(sys.prefix); print(encodings.__file__)" 2>&1 | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) {
+            throw "bundled python.exe failed to import encodings:`n$pythonEncoding"
+          }
+          Write-Host $pythonEncoding
 
           $dumpbinCommand = Get-Command dumpbin -ErrorAction SilentlyContinue
           $dumpbinPath = if ($dumpbinCommand) { $dumpbinCommand.Source } else { $null }

@@ -121,6 +121,20 @@ function Expand-ZipArchive {
     [System.IO.Compression.ZipFile]::ExtractToDirectory($ArchivePath, $DestinationPath)
 }
 
+function Assert-SolderCadPythonRuntime {
+    param([string]$SolderCadPath)
+
+    $pythonExe = Join-Path $SolderCadPath "bin\python.exe"
+    $encodingInit = Join-Path $SolderCadPath "bin\Lib\encodings\__init__.py"
+
+    if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) {
+        Fail "SolderCAD Python runtime is missing bin\python.exe"
+    }
+    if (-not (Test-Path -LiteralPath $encodingInit -PathType Leaf)) {
+        Fail "SolderCAD Python runtime is missing bin\Lib\encodings\__init__.py"
+    }
+}
+
 function Resolve-ShortTempRoot {
     if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
         Fail "USERPROFILE is not set; cannot choose a short extraction path."
@@ -202,6 +216,7 @@ try {
     if (-not (Test-Path -LiteralPath $payloadKicadShare -PathType Container)) {
         Fail "archive missing SolderCAD\share\kicad"
     }
+    Assert-SolderCadPythonRuntime -SolderCadPath $payloadSolderCad
 
     Write-Host "Installing solder.exe to $cliDestination"
     New-Item -ItemType Directory -Path $binDir -Force | Out-Null
@@ -209,6 +224,7 @@ try {
 
     Write-Host "Installing SolderCAD to $solderCadDestination"
     Copy-DirectoryFresh -Source $payloadSolderCad -Destination $solderCadDestination
+    Assert-SolderCadPythonRuntime -SolderCadPath $solderCadDestination
 
     Add-UserPathEntry -PathToAdd $binDir
     [Environment]::SetEnvironmentVariable("KICAD_APP_PATH", $kicadAppPath, "User")
