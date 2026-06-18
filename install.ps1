@@ -16,10 +16,10 @@ function Fail {
 }
 
 function Assert-WindowsX64 {
-    $isWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
+    $runningOnWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
         [System.Runtime.InteropServices.OSPlatform]::Windows
     )
-    if (-not $isWindows) {
+    if (-not $runningOnWindows) {
         Fail "install.ps1 supports Windows only."
     }
 
