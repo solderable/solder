@@ -78,3 +78,78 @@ jobs:
           if (-not $helpOutput.Contains("Usage: solder [options]")) {
             throw "solder.exe --help output did not include usage text"
           }
+
+      - name: Check bundled SolderCAD
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = "${{ inputs.version }}"
+          $root = Join-Path "release" "solder-$version-windows-x64"
+          $binDir = Join-Path $root "SolderCAD\bin"
+          $kicadCli = Join-Path $binDir "kicad-cli.exe"
+          if (-not (Test-Path -LiteralPath $kicadCli -PathType Leaf)) {
+            throw "Missing kicad-cli.exe at $kicadCli"
+          }
+
+          $kicadVersion = (& $kicadCli version 2>&1 | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) {
+            throw "kicad-cli.exe version exited with $LASTEXITCODE"
+          }
+          Write-Host $kicadVersion
+
+          $dumpbinCommand = Get-Command dumpbin -ErrorAction SilentlyContinue
+          $dumpbinPath = if ($dumpbinCommand) { $dumpbinCommand.Source } else { $null }
+          if (-not $dumpbinPath) {
+            $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+            $vsInstall = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+            $dumpbinPath = Get-ChildItem -LiteralPath (Join-Path $vsInstall "VC\Tools\MSVC") -Directory |
+              Sort-Object Name -Descending |
+              Select-Object -First 1 |
+              ForEach-Object { Join-Path $_.FullName "bin\Hostx64\x64\dumpbin.exe" }
+          }
+
+          $debugNamePatterns = @(
+            '.*-gd-.*\.dll$',
+            '.*_d\.dll$',
+            '^python\d+_d\.dll$',
+            '^python3_d\.dll$',
+            'wx.*ud_.*\.dll$'
+          )
+          $debugImportPatterns = @(
+            'MSVCRTD\.dll',
+            'MSVCP140D\.dll',
+            'VCRUNTIME140D\.dll',
+            'VCRUNTIME140_1D\.dll',
+            'UCRTBASED\.dll'
+          )
+          $violations = New-Object System.Collections.Generic.List[string]
+
+          Get-ChildItem -LiteralPath $binDir -File -Filter *.dll | ForEach-Object {
+            foreach ($pattern in $debugNamePatterns) {
+              if ($_.Name -match $pattern) {
+                $violations.Add("debug DLL in SolderCAD bin: $($_.Name)")
+                break
+              }
+            }
+          }
+
+          Get-ChildItem -LiteralPath $binDir -File | Where-Object { $_.Extension -in @(".dll", ".exe") } | ForEach-Object {
+            $binary = $_
+            $dependents = & $dumpbinPath /nologo /dependents $binary.FullName 2>&1
+            if ($LASTEXITCODE -ne 0) {
+              throw "dumpbin failed while checking $($binary.FullName)"
+            }
+
+            foreach ($line in $dependents) {
+              $dependent = ([string] $line).Trim()
+              foreach ($pattern in $debugImportPatterns) {
+                if ($dependent -match "^$pattern$") {
+                  $violations.Add("$($binary.Name) imports debug runtime $dependent")
+                }
+              }
+            }
+          }
+
+          if ($violations.Count -gt 0) {
+            throw "SolderCAD contains debug-runtime artifacts:`n$($violations -join "`n")"
+          }
