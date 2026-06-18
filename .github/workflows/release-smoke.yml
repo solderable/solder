@@ -29,8 +29,13 @@ jobs:
           set -euo pipefail
           bin="release/solder-${VERSION}-macos-arm64/solder"
           test -x "$bin"
-          "$bin" --version
-          "$bin" --help
+          version_output="$("$bin" --version)"
+          printf '%s\n' "$version_output"
+          test "$version_output" = "solder v${VERSION}"
+
+          help_output="$("$bin" --help)"
+          printf '%s\n' "$help_output"
+          grep -F "Usage: solder [options]" <<<"$help_output"
 
   windows:
     name: Windows remote TUI binary
@@ -56,11 +61,20 @@ jobs:
           if (-not (Test-Path -LiteralPath $bin -PathType Leaf)) {
             throw "Missing solder.exe at $bin"
           }
-          & $bin --version
+          $versionOutput = (& $bin --version 2>&1 | Out-String).Trim()
           if ($LASTEXITCODE -ne 0) {
             throw "solder.exe --version exited with $LASTEXITCODE"
           }
-          & $bin --help
+          Write-Host $versionOutput
+          if ($versionOutput -ne "solder v$version") {
+            throw "unexpected solder.exe --version output: '$versionOutput'"
+          }
+
+          $helpOutput = (& $bin --help 2>&1 | Out-String).Trim()
           if ($LASTEXITCODE -ne 0) {
             throw "solder.exe --help exited with $LASTEXITCODE"
+          }
+          Write-Host $helpOutput
+          if (-not $helpOutput.Contains("Usage: solder [options]")) {
+            throw "solder.exe --help output did not include usage text"
           }
