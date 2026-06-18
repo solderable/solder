@@ -110,6 +110,17 @@ function Add-UserPathEntry {
     }
 }
 
+function Expand-ZipArchive {
+    param(
+        [string]$ArchivePath,
+        [string]$DestinationPath
+    )
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    New-Item -ItemType Directory -Path $DestinationPath -Force | Out-Null
+    [System.IO.Compression.ZipFile]::ExtractToDirectory($ArchivePath, $DestinationPath)
+}
+
 Assert-WindowsX64
 
 if ([string]::IsNullOrWhiteSpace($Version)) {
@@ -152,7 +163,7 @@ try {
     Invoke-WebRequest -Uri $downloadUrl -OutFile $archivePath -Headers @{ "User-Agent" = "solder-installer" }
 
     Write-Host "Extracting $assetName"
-    Expand-Archive -LiteralPath $archivePath -DestinationPath $extractDir
+    Expand-ZipArchive -ArchivePath $archivePath -DestinationPath $extractDir
 
     $payloadRoots = @(Get-ChildItem -LiteralPath $extractDir -Directory)
     if ($payloadRoots.Count -ne 1) {
