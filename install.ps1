@@ -174,7 +174,7 @@ KICAD_APP_PATH:  $kicadAppPath
 KICAD_CLI_PATH:  $kicadCliPath
 KICAD_DISABLE_LIBRARY_PRELOAD: $kicadDisableLibraryPreload
 KICAD_SOFTWARE_RENDERING: cleared
-"@ | Write-Host
+"@ | Write-Output
     exit 0
 }
 
