@@ -63,10 +63,10 @@ jobs:
 
           $dryRunOutput = (& .\install.ps1 -DryRun -Version $version *>&1 | Out-String).Trim()
           Write-Host $dryRunOutput
-          if ($dryRunOutput -notmatch "(?m)^KICAD_DISABLE_LIBRARY_PRELOAD:\s+1$") {
+          if (-not $dryRunOutput.Contains("KICAD_DISABLE_LIBRARY_PRELOAD: 1")) {
             throw "install.ps1 dry run did not include KICAD_DISABLE_LIBRARY_PRELOAD"
           }
-          if ($dryRunOutput -notmatch "(?m)^KICAD_SOFTWARE_RENDERING:\s+cleared$") {
+          if (-not $dryRunOutput.Contains("KICAD_SOFTWARE_RENDERING: cleared")) {
             throw "install.ps1 dry run did not clear KICAD_SOFTWARE_RENDERING"
           }
 
