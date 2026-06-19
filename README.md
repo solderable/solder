@@ -50,7 +50,7 @@ Install a specific release:
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.1.13
 ```
 
-The Windows installer downloads `solder-<version>-windows-x64.zip`, installs to `$env:LOCALAPPDATA\Solder`, adds the installed `bin` directory to the user `PATH` if needed, and sets user `KICAD_APP_PATH` and `KICAD_CLI_PATH` variables for the bundled SolderCAD tools.
+The Windows installer downloads `solder-<version>-windows-x64.zip`, installs to `$env:LOCALAPPDATA\Solder`, adds the installed `bin` directory to the user `PATH` if needed, and sets user `KICAD_APP_PATH`, `KICAD_CLI_PATH`, and `KICAD_SOFTWARE_RENDERING` variables for the bundled SolderCAD tools.
 
 Both installers support dry-run mode:
 
