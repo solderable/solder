@@ -52,6 +52,24 @@ jobs:
             -OutFile $asset
           Expand-Archive -LiteralPath $asset -DestinationPath release -Force
 
+      - name: Check Windows installer dry run
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = "${{ inputs.version }}"
+          Invoke-WebRequest `
+            -Uri "https://raw.githubusercontent.com/solderable/solder/main/install.ps1" `
+            -OutFile install.ps1
+
+          $dryRunOutput = (& .\install.ps1 -DryRun -Version $version 2>&1 | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) {
+            throw "install.ps1 -DryRun exited with $LASTEXITCODE"
+          }
+          Write-Host $dryRunOutput
+          if (-not $dryRunOutput.Contains("KICAD_SOFTWARE_RENDERING: 1")) {
+            throw "install.ps1 dry run did not include KICAD_SOFTWARE_RENDERING"
+          }
+
       - name: Run solder binary
         shell: pwsh
         run: |
