@@ -156,7 +156,10 @@ PAYLOAD_ROOT_COUNT=0
 while IFS= read -r candidate_root; do
   PAYLOAD_ROOT="$candidate_root"
   PAYLOAD_ROOT_COUNT=$((PAYLOAD_ROOT_COUNT + 1))
-done < <(find "$EXTRACT_DIR" -mindepth 1 -maxdepth 1 -type d -print)
+done < <(find "$EXTRACT_DIR" -mindepth 1 -maxdepth 1 -type d \
+  ! -name '__MACOSX' \
+  ! -name '.*' \
+  -print)
 
 [[ "$PAYLOAD_ROOT_COUNT" -eq 1 ]] || die "expected archive to contain exactly one top-level folder"
 
