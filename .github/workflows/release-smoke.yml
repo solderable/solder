@@ -61,12 +61,9 @@ jobs:
             -Uri "https://raw.githubusercontent.com/solderable/solder/main/install.ps1" `
             -OutFile install.ps1
 
-          $dryRunOutput = (& .\install.ps1 -DryRun -Version $version 2>&1 | Out-String).Trim()
-          if ($LASTEXITCODE -ne 0) {
-            throw "install.ps1 -DryRun exited with $LASTEXITCODE"
-          }
+          $dryRunOutput = (& .\install.ps1 -DryRun -Version $version *>&1 | Out-String).Trim()
           Write-Host $dryRunOutput
-          if (-not $dryRunOutput.Contains("KICAD_SOFTWARE_RENDERING: 1")) {
+          if ($dryRunOutput -notmatch "(?m)^KICAD_SOFTWARE_RENDERING:\s+1$") {
             throw "install.ps1 dry run did not include KICAD_SOFTWARE_RENDERING"
           }
 
