@@ -157,7 +157,6 @@ $cliDestination = Join-Path $binDir "solder.exe"
 $solderCadDestination = Join-Path $InstallDir "SolderCAD"
 $kicadAppPath = $solderCadDestination
 $kicadCliPath = Join-Path $solderCadDestination "bin\kicad-cli.exe"
-$kicadSoftwareRendering = "1"
 
 if ($DryRun) {
     @"
@@ -172,7 +171,7 @@ CLI destination: $cliDestination
 SolderCAD dir:   $solderCadDestination
 KICAD_APP_PATH:  $kicadAppPath
 KICAD_CLI_PATH:  $kicadCliPath
-KICAD_SOFTWARE_RENDERING: $kicadSoftwareRendering
+KICAD_SOFTWARE_RENDERING: cleared
 "@ | Write-Host
     exit 0
 }
@@ -231,10 +230,10 @@ try {
     Add-UserPathEntry -PathToAdd $binDir
     [Environment]::SetEnvironmentVariable("KICAD_APP_PATH", $kicadAppPath, "User")
     [Environment]::SetEnvironmentVariable("KICAD_CLI_PATH", $kicadCliPath, "User")
-    [Environment]::SetEnvironmentVariable("KICAD_SOFTWARE_RENDERING", $kicadSoftwareRendering, "User")
+    [Environment]::SetEnvironmentVariable("KICAD_SOFTWARE_RENDERING", $null, "User")
     $env:KICAD_APP_PATH = $kicadAppPath
     $env:KICAD_CLI_PATH = $kicadCliPath
-    $env:KICAD_SOFTWARE_RENDERING = $kicadSoftwareRendering
+    Remove-Item Env:KICAD_SOFTWARE_RENDERING -ErrorAction SilentlyContinue
 
     Write-Host ""
     Write-Host "Solder $Version installed."
@@ -242,7 +241,7 @@ try {
     Write-Host "SolderCAD:      $solderCadDestination"
     Write-Host "KICAD_APP_PATH: $kicadAppPath"
     Write-Host "KICAD_CLI_PATH: $kicadCliPath"
-    Write-Host "KICAD_SOFTWARE_RENDERING: $kicadSoftwareRendering"
+    Write-Host "KICAD_SOFTWARE_RENDERING: cleared"
     Write-Host ""
     Write-Host "Open a new terminal before running solder if this is your first install."
 }
