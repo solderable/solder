@@ -28,7 +28,7 @@ Install a specific release:
 curl -fsSL https://raw.githubusercontent.com/solderable/solder/main/install.sh | bash -s -- --version 0.1.13
 ```
 
-The macOS installer downloads the matching `solder-<version>-macos-<arch>.zip` release asset, installs the CLI to `~/.local/bin/solder`, and installs `SolderCAD.app` beside the CLI and into `~/Applications/SolderCAD.app` when possible.
+The macOS installer downloads the matching `solder-<version>-macos-<arch>.zip` release asset, installs the CLI to `~/.local/bin/solder`, and installs the single SolderCAD app copy to `~/Applications/SolderCAD.app`.
 
 Windows from `cmd.exe`:
 
@@ -50,7 +50,7 @@ Install a specific release:
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.1.13
 ```
 
-The Windows installer downloads `solder-<version>-windows-x64.zip`, installs to `$env:LOCALAPPDATA\Solder`, adds the installed `bin` directory to the user `PATH` if needed, sets user `KICAD_APP_PATH`, `KICAD_CLI_PATH`, and `KICAD_DISABLE_LIBRARY_PRELOAD` variables for the bundled SolderCAD tools, and clears any previous `KICAD_SOFTWARE_RENDERING` override.
+The Windows installer downloads `solder-<version>-windows-x64.zip`, installs `solder.exe` to `$env:LOCALAPPDATA\Solder\bin`, installs the single SolderCAD copy to `$env:LOCALAPPDATA\Solder\SolderCAD`, adds the installed `bin` directory to the user `PATH` if needed, sets user `KICAD_APP_PATH`, `KICAD_CLI_PATH`, and `KICAD_DISABLE_LIBRARY_PRELOAD` variables for the bundled SolderCAD tools, and clears any previous `KICAD_SOFTWARE_RENDERING` override.
 
 Both installers support dry-run mode:
 

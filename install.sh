@@ -15,8 +15,8 @@ Usage:
 
 Options:
   --version <version>  Install a specific release tag/version. Defaults to latest.
-  --install-dir <dir>  Install solder and a copy of SolderCAD.app into this directory.
-                       Defaults to ~/.local/bin.
+  --install-dir <dir>  Install the solder command into this directory.
+                       Defaults to ~/.local/bin. SolderCAD.app is installed to ~/Applications.
   --dry-run            Print the actions that would be taken without installing.
   -h, --help           Show this help.
 EOF
@@ -117,7 +117,7 @@ fi
 ASSET_NAME="solder-${VERSION}-macos-${ARCH}.zip"
 DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}/${ASSET_NAME}"
 CLI_DEST="${INSTALL_DIR}/solder"
-SIDECAR_APP_DEST="${INSTALL_DIR}/SolderCAD.app"
+OLD_SIDECAR_APP_DEST="${INSTALL_DIR}/SolderCAD.app"
 APPLICATIONS_APP_DEST="${HOME}/Applications/SolderCAD.app"
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
@@ -129,8 +129,8 @@ Version:           ${VERSION}
 Architecture:      ${ARCH}
 Download URL:      ${DOWNLOAD_URL}
 CLI destination:   ${CLI_DEST}
-App destination:   ${SIDECAR_APP_DEST}
-Applications copy: ${APPLICATIONS_APP_DEST}
+App destination:   ${APPLICATIONS_APP_DEST}
+Old sidecar app:   ${OLD_SIDECAR_APP_DEST}
 EOF
   exit 0
 fi
@@ -171,22 +171,21 @@ printf 'Installing solder to %s\n' "$CLI_DEST"
 mkdir -p "$INSTALL_DIR"
 install -m 0755 "${PAYLOAD_ROOT}/solder" "$CLI_DEST"
 
-printf 'Installing SolderCAD.app to %s\n' "$SIDECAR_APP_DEST"
-copy_app_bundle "${PAYLOAD_ROOT}/SolderCAD.app" "$SIDECAR_APP_DEST"
+if [[ -e "$OLD_SIDECAR_APP_DEST" || -L "$OLD_SIDECAR_APP_DEST" ]]; then
+  printf 'Removing old sidecar SolderCAD.app from %s\n' "$OLD_SIDECAR_APP_DEST"
+  rm -rf "$OLD_SIDECAR_APP_DEST"
+fi
 
 printf 'Installing SolderCAD.app to %s\n' "$APPLICATIONS_APP_DEST"
-if mkdir -p "${HOME}/Applications" && copy_app_bundle "${PAYLOAD_ROOT}/SolderCAD.app" "$APPLICATIONS_APP_DEST"; then
-  :
-else
-  printf 'warning: could not install SolderCAD.app to %s\n' "$APPLICATIONS_APP_DEST" >&2
-fi
+mkdir -p "${HOME}/Applications"
+copy_app_bundle "${PAYLOAD_ROOT}/SolderCAD.app" "$APPLICATIONS_APP_DEST"
 
 cat <<EOF
 
 Solder ${VERSION} installed.
 
 CLI:       ${CLI_DEST}
-SolderCAD: ${SIDECAR_APP_DEST}
+SolderCAD: ${APPLICATIONS_APP_DEST}
 EOF
 
 if [[ ":${PATH}:" != *":${INSTALL_DIR}:"* ]]; then

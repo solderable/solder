@@ -155,6 +155,7 @@ $downloadUrl = "https://github.com/$Repo/releases/download/$Version/$assetName"
 $binDir = Join-Path $InstallDir "bin"
 $cliDestination = Join-Path $binDir "solder.exe"
 $solderCadDestination = Join-Path $InstallDir "SolderCAD"
+$oldSidecarSolderCadDestination = Join-Path $binDir "SolderCAD"
 $kicadAppPath = $solderCadDestination
 $kicadCliPath = Join-Path $solderCadDestination "bin\kicad-cli.exe"
 $kicadDisableLibraryPreload = "1"
@@ -170,6 +171,7 @@ Download URL:    $downloadUrl
 Install dir:     $InstallDir
 CLI destination: $cliDestination
 SolderCAD dir:   $solderCadDestination
+Old sidecar dir: $oldSidecarSolderCadDestination
 KICAD_APP_PATH:  $kicadAppPath
 KICAD_CLI_PATH:  $kicadCliPath
 KICAD_DISABLE_LIBRARY_PRELOAD: $kicadDisableLibraryPreload
@@ -224,6 +226,11 @@ try {
     Write-Host "Installing solder.exe to $cliDestination"
     New-Item -ItemType Directory -Path $binDir -Force | Out-Null
     Copy-Item -LiteralPath $payloadCli -Destination $cliDestination -Force
+
+    if (Test-Path -LiteralPath $oldSidecarSolderCadDestination) {
+        Write-Host "Removing old sidecar SolderCAD from $oldSidecarSolderCadDestination"
+        Remove-ExistingPath -Path $oldSidecarSolderCadDestination
+    }
 
     Write-Host "Installing SolderCAD to $solderCadDestination"
     Copy-DirectoryFresh -Source $payloadSolderCad -Destination $solderCadDestination
