@@ -37,6 +37,30 @@ jobs:
           printf '%s\n' "$help_output"
           grep -F "Usage: solder [options]" <<<"$help_output"
 
+      - name: Check bundled SolderCAD
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          root="release/solder-${VERSION}-macos-arm64"
+          app="$root/SolderCAD.app"
+          shared="$app/Contents/SharedSupport"
+          kicad_cli="$app/Contents/MacOS/kicad-cli"
+
+          test -x "$app/Contents/MacOS/kicad"
+          test -x "$kicad_cli"
+          test -f "$shared/resources/images.tar.gz"
+          test -f "$shared/schemas/pcm.v1.schema.json"
+          test -f "$shared/schemas/pcm.v2.schema.json"
+          test -d "$shared/3dmodels"
+
+          find "$shared/symbols" -type f -name '*.kicad_sym' -print -quit | grep -q .
+          find "$shared/footprints" -maxdepth 1 -type d -name '*.pretty' -print -quit | grep -q .
+          find "$shared/template" -type f -name '*.kicad_pro' -print -quit | grep -q .
+          find "$shared/3dmodels" -type f \( -name '*.step' -o -name '*.stp' -o -name '*.wrl' \) -print -quit | grep -q .
+
+          "$kicad_cli" version
+
   windows:
     name: Windows remote TUI binary
     runs-on: windows-latest
@@ -103,19 +127,73 @@ jobs:
           $ErrorActionPreference = "Stop"
           $version = "${{ inputs.version }}"
           $root = Join-Path "release" "solder-$version-windows-x64"
+          $solderCad = Join-Path $root "SolderCAD"
           $binDir = Join-Path $root "SolderCAD\bin"
+          $shareDir = Join-Path $solderCad "share\kicad"
+          $kicad = Join-Path $binDir "kicad.exe"
           $kicadCli = Join-Path $binDir "kicad-cli.exe"
           $python = Join-Path $binDir "python.exe"
           $encodingInit = Join-Path $binDir "Lib\encodings\__init__.py"
-          if (-not (Test-Path -LiteralPath $kicadCli -PathType Leaf)) {
-            throw "Missing kicad-cli.exe at $kicadCli"
+          $symbols = Join-Path $shareDir "symbols"
+          $footprints = Join-Path $shareDir "footprints"
+          $template = Join-Path $shareDir "template"
+          $schemas = Join-Path $shareDir "schemas"
+          $models = Join-Path $shareDir "3dmodels"
+          $resources = Join-Path $shareDir "resources"
+
+          function Assert-Path {
+            param(
+              [string] $Path,
+              [string] $PathType,
+              [string] $Description
+            )
+
+            if (-not (Test-Path -LiteralPath $Path -PathType $PathType)) {
+              throw "Missing $Description at $Path"
+            }
           }
-          if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
-            throw "Missing bundled python.exe at $python"
+
+          function Assert-AnyFile {
+            param(
+              [string] $Directory,
+              [string] $Filter,
+              [string] $Description
+            )
+
+            Assert-Path -Path $Directory -PathType Container -Description $Description
+            $match = Get-ChildItem -LiteralPath $Directory -Recurse -File -Filter $Filter -ErrorAction Stop | Select-Object -First 1
+            if (-not $match) {
+              throw "Missing $Description in $Directory"
+            }
+            Write-Host "$Description sample: $($match.FullName)"
           }
-          if (-not (Test-Path -LiteralPath $encodingInit -PathType Leaf)) {
-            throw "Missing bundled Python encodings at $encodingInit"
+
+          function Assert-AnyDirectory {
+            param(
+              [string] $Directory,
+              [string] $Filter,
+              [string] $Description
+            )
+
+            Assert-Path -Path $Directory -PathType Container -Description $Description
+            $match = Get-ChildItem -LiteralPath $Directory -Directory -Filter $Filter -ErrorAction Stop | Select-Object -First 1
+            if (-not $match) {
+              throw "Missing $Description in $Directory"
+            }
+            Write-Host "$Description sample: $($match.FullName)"
           }
+
+          Assert-Path -Path $kicad -PathType Leaf -Description "kicad.exe"
+          Assert-Path -Path $kicadCli -PathType Leaf -Description "kicad-cli.exe"
+          Assert-Path -Path $python -PathType Leaf -Description "bundled python.exe"
+          Assert-Path -Path $encodingInit -PathType Leaf -Description "bundled Python encodings"
+          Assert-Path -Path (Join-Path $schemas "pcm.v1.schema.json") -PathType Leaf -Description "KiCad PCM v1 schema"
+          Assert-Path -Path (Join-Path $schemas "pcm.v2.schema.json") -PathType Leaf -Description "KiCad PCM v2 schema"
+          Assert-Path -Path (Join-Path $resources "images.tar.gz") -PathType Leaf -Description "KiCad resource image archive"
+          Assert-Path -Path $models -PathType Container -Description "KiCad 3D model directory"
+          Assert-AnyFile -Directory $symbols -Filter "*.kicad_sym" -Description "KiCad symbol library"
+          Assert-AnyDirectory -Directory $footprints -Filter "*.pretty" -Description "KiCad footprint library"
+          Assert-AnyFile -Directory $template -Filter "*.kicad_pro" -Description "KiCad template library"
 
           $kicadVersion = (& $kicadCli version 2>&1 | Out-String).Trim()
           if ($LASTEXITCODE -ne 0) {
