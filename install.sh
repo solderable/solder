@@ -3,6 +3,8 @@ set -euo pipefail
 
 REPO="solderable/solder"
 INSTALL_DIR="${HOME}/.local/bin"
+CONFIG_ROOT="${XDG_CONFIG_HOME:-${HOME}/.config}"
+APP_CONFIG_DIR="${CONFIG_ROOT}/solderslack"
 VERSION=""
 DRY_RUN=0
 
@@ -54,6 +56,68 @@ copy_app_bundle() {
 
   rm -rf "$destination_app"
   ditto "$source_app" "$destination_app"
+}
+
+config_dir_writable() {
+  local probe
+  mkdir -p "$CONFIG_ROOT" 2>/dev/null || return 1
+  mkdir -p -m 700 "$APP_CONFIG_DIR" 2>/dev/null || return 1
+  probe="${APP_CONFIG_DIR}/.install-write-probe.$$"
+  touch "$probe" 2>/dev/null || return 1
+  rm -f "$probe"
+}
+
+print_config_dir_fix() {
+  cat >&2 <<EOF
+
+warning: ${CONFIG_ROOT} is not writable by your user (often caused by a past
+"sudo" install of another tool). solder is installed and will run, but it
+cannot save your /auth sign-in until you fix the ownership:
+
+  sudo chown "\$(id -un)" "${CONFIG_ROOT}" && mkdir -p "${APP_CONFIG_DIR}"
+
+EOF
+}
+
+# solder saves its sign-in key under ~/.config/solderslack. A root-owned
+# ~/.config (left behind by past sudo installs of other tools) makes that
+# save fail after an otherwise-successful /auth, so repair ownership now.
+ensure_config_dir() {
+  if config_dir_writable; then
+    return 0
+  fi
+
+  case "$CONFIG_ROOT" in
+    "${HOME}"/*) ;;
+    *)
+      print_config_dir_fix
+      return 0
+      ;;
+  esac
+
+  printf '\n%s is not writable by your user (often caused by a past "sudo" install).\n' "$CONFIG_ROOT" >&2
+  printf 'Fixing ownership so solder can save your sign-in — sudo may ask for your password.\n' >&2
+
+  if ! sudo -n true 2>/dev/null; then
+    if [[ ! -r /dev/tty ]] || ! sudo -p "Password for %p: " true; then
+      print_config_dir_fix
+      return 0
+    fi
+  fi
+
+  sudo mkdir -p "$CONFIG_ROOT" 2>/dev/null || true
+  sudo chown "$(id -u):$(id -g)" "$CONFIG_ROOT" 2>/dev/null || true
+  sudo chmod u+rwx "$CONFIG_ROOT" 2>/dev/null || true
+  if [[ -e "$APP_CONFIG_DIR" ]]; then
+    sudo chown -R "$(id -u):$(id -g)" "$APP_CONFIG_DIR" 2>/dev/null || true
+    sudo chmod -R u+rwX "$APP_CONFIG_DIR" 2>/dev/null || true
+  fi
+
+  if config_dir_writable; then
+    printf 'Fixed: %s is now writable.\n' "$APP_CONFIG_DIR" >&2
+  else
+    print_config_dir_fix
+  fi
 }
 
 while [[ $# -gt 0 ]]; do
@@ -131,6 +195,7 @@ Download URL:      ${DOWNLOAD_URL}
 CLI destination:   ${CLI_DEST}
 App destination:   ${APPLICATIONS_APP_DEST}
 Old sidecar app:   ${OLD_SIDECAR_APP_DEST}
+Config directory:  ${APP_CONFIG_DIR}
 EOF
   exit 0
 fi
@@ -179,6 +244,8 @@ fi
 printf 'Installing SolderCAD.app to %s\n' "$APPLICATIONS_APP_DEST"
 mkdir -p "${HOME}/Applications"
 copy_app_bundle "${PAYLOAD_ROOT}/SolderCAD.app" "$APPLICATIONS_APP_DEST"
+
+ensure_config_dir
 
 cat <<EOF
 
