@@ -16,15 +16,22 @@ function Fail {
 }
 
 function Assert-WindowsX64 {
-    $runningOnWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
-        [System.Runtime.InteropServices.OSPlatform]::Windows
-    )
-    if (-not $runningOnWindows) {
+    # Do not use [System.Runtime.InteropServices.RuntimeInformation] here: under
+    # Windows PowerShell 5.1 it binds to whichever facade assembly the session
+    # already loaded, and older facades lack OSArchitecture, which is a
+    # strict-mode PropertyNotFoundStrict error.
+    if ([System.Environment]::OSVersion.Platform -ne [System.PlatformID]::Win32NT) {
         Fail "install.ps1 supports Windows only."
     }
 
-    $architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
-    if ($architecture -ne [System.Runtime.InteropServices.Architecture]::X64) {
+    # PROCESSOR_ARCHITEW6432 reports the OS architecture when running in a
+    # 32-bit process on a 64-bit OS; PROCESSOR_ARCHITECTURE alone would say x86.
+    $architecture = $env:PROCESSOR_ARCHITEW6432
+    if ([string]::IsNullOrWhiteSpace($architecture)) {
+        $architecture = $env:PROCESSOR_ARCHITECTURE
+    }
+
+    if ($architecture -ne "AMD64") {
         Fail "unsupported Windows architecture: $architecture"
     }
 }
