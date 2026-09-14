@@ -13,7 +13,9 @@ on:
         default: false
 
 permissions:
-  contents: read
+  # GitHub only exposes unpublished releases to tokens with push permission.
+  # The token is passed only to the download steps, never to the binaries.
+  contents: write
 
 jobs:
   macos:
