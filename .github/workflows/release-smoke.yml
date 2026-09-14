@@ -7,6 +7,13 @@ on:
         description: Release tag to test
         required: true
         default: "0.1.13"
+      draft:
+        description: Download an unpublished draft using repository authentication
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
 
 jobs:
   macos:
@@ -16,10 +23,16 @@ jobs:
       - name: Download release asset
         env:
           VERSION: ${{ inputs.version }}
+          DOWNLOAD_DRAFT: ${{ inputs.draft }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           asset="solder-${VERSION}-macos-arm64.zip"
-          curl -fL -o "$asset" "https://github.com/solderable/solder/releases/download/${VERSION}/${asset}"
+          if [[ "$DOWNLOAD_DRAFT" == "true" ]]; then
+            gh release download "$VERSION" --repo solderable/solder --pattern "$asset" --dir .
+          else
+            curl -fL -o "$asset" "https://github.com/solderable/solder/releases/download/${VERSION}/${asset}"
+          fi
           unzip -q "$asset" -d release
 
       - name: Run solder binary
@@ -64,23 +77,33 @@ jobs:
   windows:
     name: Windows remote TUI binary
     runs-on: windows-latest
+    env:
+      VERSION: ${{ inputs.version }}
     steps:
       - name: Download release asset
         shell: pwsh
+        env:
+          DOWNLOAD_DRAFT: ${{ inputs.draft }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = "Stop"
-          $version = "${{ inputs.version }}"
+          $version = $env:VERSION
           $asset = "solder-$version-windows-x64.zip"
-          Invoke-WebRequest `
-            -Uri "https://github.com/solderable/solder/releases/download/$version/$asset" `
-            -OutFile $asset
+          if ($env:DOWNLOAD_DRAFT -eq "true") {
+            gh release download $version --repo solderable/solder --pattern $asset --dir .
+            if ($LASTEXITCODE -ne 0) { throw "Draft asset download failed with $LASTEXITCODE" }
+          } else {
+            Invoke-WebRequest `
+              -Uri "https://github.com/solderable/solder/releases/download/$version/$asset" `
+              -OutFile $asset
+          }
           Expand-Archive -LiteralPath $asset -DestinationPath release -Force
 
       - name: Check Windows installer dry run
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $version = "${{ inputs.version }}"
+          $version = $env:VERSION
           Invoke-WebRequest `
             -Uri "https://raw.githubusercontent.com/solderable/solder/main/install.ps1" `
             -OutFile install.ps1
@@ -98,25 +121,25 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $version = "${{ inputs.version }}"
+          $version = $env:VERSION
           $bin = Join-Path "release" "solder-$version-windows-x64\solder.exe"
           if (-not (Test-Path -LiteralPath $bin -PathType Leaf)) {
             throw "Missing solder.exe at $bin"
           }
           $versionOutput = (& $bin --version 2>&1 | Out-String).Trim()
+          Write-Host $versionOutput
           if ($LASTEXITCODE -ne 0) {
             throw "solder.exe --version exited with $LASTEXITCODE"
           }
-          Write-Host $versionOutput
           if ($versionOutput -ne "solder v$version") {
             throw "unexpected solder.exe --version output: '$versionOutput'"
           }
 
           $helpOutput = (& $bin --help 2>&1 | Out-String).Trim()
+          Write-Host $helpOutput
           if ($LASTEXITCODE -ne 0) {
             throw "solder.exe --help exited with $LASTEXITCODE"
           }
-          Write-Host $helpOutput
           if (-not $helpOutput.Contains("Usage: solder [options]")) {
             throw "solder.exe --help output did not include usage text"
           }
@@ -125,7 +148,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $version = "${{ inputs.version }}"
+          $version = $env:VERSION
           $root = Join-Path "release" "solder-$version-windows-x64"
           $solderCad = Join-Path $root "SolderCAD"
           $binDir = Join-Path $root "SolderCAD\bin"
