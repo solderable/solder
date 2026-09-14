@@ -6,9 +6,13 @@ on:
       version:
         description: Release tag to test
         required: true
-        default: "0.1.13"
+        default: "1.30.0"
       draft:
         description: Download an unpublished draft using repository authentication
+        type: boolean
+        default: false
+      runtime_checks:
+        description: Verify standalone runtimes and project creation (1.30.0 or newer)
         type: boolean
         default: false
 
@@ -52,6 +56,13 @@ jobs:
           printf '%s\n' "$help_output"
           grep -F "Usage: solder [options]" <<<"$help_output"
 
+      - name: Exercise CLI runtimes and project creation
+        if: ${{ inputs.runtime_checks }}
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          bin="release/solder-${VERSION}-macos-arm64/solder"
           image_output="$("$bin" __verify-native-image-runtime)"
           printf '%s\n' "$image_output"
           test "$image_output" = "solder native image runtime ok"
@@ -170,6 +181,12 @@ jobs:
             throw "solder.exe --help output did not include usage text"
           }
 
+      - name: Exercise CLI runtimes and project creation
+        if: ${{ inputs.runtime_checks }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $bin = Join-Path "release" "solder-$env:VERSION-windows-x64\solder.exe"
           $imageOutput = (& $bin __verify-native-image-runtime 2>&1 | Out-String).Trim()
           Write-Host $imageOutput
           if ($LASTEXITCODE -ne 0 -or $imageOutput -cne "solder native image runtime ok") {
