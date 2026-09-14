@@ -52,6 +52,30 @@ jobs:
           printf '%s\n' "$help_output"
           grep -F "Usage: solder [options]" <<<"$help_output"
 
+          image_output="$("$bin" __verify-native-image-runtime)"
+          printf '%s\n' "$image_output"
+          test "$image_output" = "solder native image runtime ok"
+
+          sentry_output="$("$bin" __verify-remote-tui-sentry)"
+          printf '%s\n' "$sentry_output"
+          test "$sentry_output" = "solder remote tui sentry sdk ok"
+
+          project="$RUNNER_TEMP/solder-release-smoke-project"
+          mkdir "$project"
+          "$bin" init --project "$project" --json > "$RUNNER_TEMP/solder-init.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          scratch = Path(os.environ["RUNNER_TEMP"])
+          project = (scratch / "solder-release-smoke-project").resolve()
+          result = json.loads((scratch / "solder-init.json").read_text())
+          project_file = Path(result["projectFile"]).resolve()
+          assert project_file.is_relative_to(project), result
+          assert project_file.is_file(), result
+          assert (project / "workfiles/main.sheet").is_file(), result
+          print("Solder project initialization passed")
+          PY
+
       - name: Check bundled SolderCAD
         env:
           VERSION: ${{ inputs.version }}
@@ -145,6 +169,38 @@ jobs:
           if (-not $helpOutput.Contains("Usage: solder [options]")) {
             throw "solder.exe --help output did not include usage text"
           }
+
+          $imageOutput = (& $bin __verify-native-image-runtime 2>&1 | Out-String).Trim()
+          Write-Host $imageOutput
+          if ($LASTEXITCODE -ne 0 -or $imageOutput -cne "solder native image runtime ok") {
+            throw "solder.exe native image runtime check failed"
+          }
+
+          $sentryOutput = (& $bin __verify-remote-tui-sentry 2>&1 | Out-String).Trim()
+          Write-Host $sentryOutput
+          if ($LASTEXITCODE -ne 0 -or $sentryOutput -cne "solder remote tui sentry sdk ok") {
+            throw "solder.exe Sentry runtime check failed"
+          }
+
+          $project = Join-Path $env:RUNNER_TEMP "solder-release-smoke-project"
+          New-Item -ItemType Directory -Path $project | Out-Null
+          $initOutput = (& $bin init --project $project --json | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) {
+            throw "solder.exe project initialization failed with $LASTEXITCODE"
+          }
+          $created = $initOutput | ConvertFrom-Json
+          $projectFile = [System.IO.Path]::GetFullPath($created.projectFile)
+          $projectPrefix = [System.IO.Path]::GetFullPath($project) + [System.IO.Path]::DirectorySeparatorChar
+          if (-not $projectFile.StartsWith($projectPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Initialized project file is outside the requested directory"
+          }
+          if (-not (Test-Path -LiteralPath $projectFile -PathType Leaf)) {
+            throw "Initialized project file is missing"
+          }
+          if (-not (Test-Path -LiteralPath (Join-Path $project "workfiles\main.sheet") -PathType Leaf)) {
+            throw "Initialized drawing-language schematic is missing"
+          }
+          Write-Host "Solder project initialization passed"
 
       - name: Check bundled SolderCAD
         shell: pwsh
