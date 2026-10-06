@@ -128,7 +128,19 @@ function Assert-ArchiveIntegrity {
     if ((Get-Item -LiteralPath $ArchivePath).Length -ne $Download.Size) {
         Fail "downloaded archive size does not match the GitHub release asset"
     }
-    if ((Get-FileHash -LiteralPath $ArchivePath -Algorithm SHA256).Hash -ine $Download.Sha256) {
+    # Stream through .NET so this also works when PowerShell 5.1 is launched
+    # from a host whose PSModulePath does not expose Get-FileHash.
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    $stream = $null
+    try {
+        $stream = [System.IO.File]::OpenRead($ArchivePath)
+        $actualHash = [BitConverter]::ToString($sha256.ComputeHash($stream)).Replace("-", "")
+    }
+    finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+        $sha256.Dispose()
+    }
+    if ($actualHash -ine $Download.Sha256) {
         Fail "downloaded archive SHA-256 does not match the GitHub release asset"
     }
 }
