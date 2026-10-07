@@ -16,6 +16,16 @@ Use Solder when you want to:
 
 ## Install
 
+The installers download Solder CLI and SolderCAD together from the release's
+public UploadThing CDN URL. GitHub remains the release catalog and also hosts
+the same ZIP files. Before installing, both installers check the ZIP's byte
+size and SHA-256 against the GitHub release asset.
+
+Older releases without a CDN URL continue to download from GitHub. A failed
+CDN download or invalid CDN metadata stops installation; it does not silently
+switch sources. To select GitHub yourself, pass `--download-source github` on
+macOS or `-DownloadSource GitHub` on Windows.
+
 macOS:
 
 ```bash
@@ -61,6 +71,19 @@ curl -fsSL https://raw.githubusercontent.com/solderable/solder/main/install.sh |
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -DryRun
 ```
+
+Dry runs resolve the release metadata and show the selected download URL,
+source, byte size, and SHA-256 without downloading or installing the ZIP.
+
+The older `install-solder-release.sh` script is a separate GitHub/custom-URL
+installer. Use `install.sh` or `install.ps1` above for CDN downloads and checksum
+verification.
+
+Installer download contracts run with `bun test __tests__/installers.test.ts`.
+CI runs the macOS shell/JXA path on macOS and the Windows path with native
+Windows PowerShell 5.1; macOS also exercises the PowerShell functions with `pwsh`.
+The fixtures replace network responses and check archive integrity before
+installation, without installing Solder or SolderCAD.
 
 ## Quick Start
 

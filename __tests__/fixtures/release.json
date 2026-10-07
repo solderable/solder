@@ -1,0 +1,44 @@
+{
+  "release": {
+    "tag_name": "1.2.3",
+    "draft": false,
+    "assets": [
+      {
+        "name": "solder-1.2.3-macos-arm64.zip",
+        "size": 3,
+        "digest": "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        "browser_download_url": "https://github.com/solderable/solder/releases/download/1.2.3/solder-1.2.3-macos-arm64.zip"
+      },
+      {
+        "name": "solder-1.2.3-macos-x64.zip",
+        "size": 3,
+        "digest": "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        "browser_download_url": "https://github.com/solderable/solder/releases/download/1.2.3/solder-1.2.3-macos-x64.zip"
+      },
+      {
+        "name": "solder-1.2.3-windows-x64.zip",
+        "size": 3,
+        "digest": "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        "browser_download_url": "https://github.com/solderable/solder/releases/download/1.2.3/solder-1.2.3-windows-x64.zip"
+      }
+    ]
+  },
+  "details": {
+    "macos": {
+      "asset": {
+        "name": "solder-1.2.3-macos-arm64.zip",
+        "size": 3,
+        "digest": "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        "downloadUrl": "https://solder.ufs.sh/f/macos_123"
+      }
+    },
+    "windows": {
+      "asset": {
+        "name": "solder-1.2.3-windows-x64.zip",
+        "size": 3,
+        "digest": "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        "downloadUrl": "https://solder.ufs.sh/f/windows_123"
+      }
+    }
+  }
+}

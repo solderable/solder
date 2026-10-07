@@ -2,6 +2,8 @@
 param(
     [string]$Version,
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA "Solder"),
+    [ValidateSet("Auto", "GitHub")]
+    [string]$DownloadSource = "Auto",
     [switch]$DryRun
 )
 
@@ -36,21 +38,111 @@ function Assert-WindowsX64 {
     }
 }
 
-function Resolve-LatestVersion {
-    $latestUrl = "https://api.github.com/repos/$Repo/releases/latest"
+function Get-ReleaseProperty {
+    param($Object, [string]$Name)
+    if ($null -eq $Object) { return $null }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $null }
+    return ,$property.Value
+}
+
+function Resolve-ReleaseDownload {
+    param([string]$RequestedVersion, [string]$Source)
+    if (-not [string]::IsNullOrEmpty($RequestedVersion) -and $RequestedVersion -cnotmatch '\Av?[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:-[0-9A-Za-z.-]+)?\z') {
+        Fail "-Version must be a release version."
+    }
+    $releaseUrl = if ([string]::IsNullOrEmpty($RequestedVersion)) {
+        "https://api.github.com/repos/$Repo/releases/latest"
+    } else {
+        "https://api.github.com/repos/$Repo/releases/tags/$RequestedVersion"
+    }
+    Write-Host "Reading GitHub release metadata..."
     try {
-        $release = Invoke-RestMethod -Uri $latestUrl -Headers @{ "User-Agent" = "solder-installer" }
+        $release = Invoke-RestMethod -Uri $releaseUrl -TimeoutSec 60 -Headers @{ "User-Agent" = "solder-installer"; "Accept" = "application/vnd.github+json" }
     }
     catch {
-        Fail "failed to resolve latest release from ${latestUrl}: $($_.Exception.Message)"
+        Fail "failed to read GitHub release metadata: $($_.Exception.Message)"
     }
-
-    $tagNameProperty = $release.PSObject.Properties["tag_name"]
-    if ($null -eq $tagNameProperty -or [string]::IsNullOrWhiteSpace([string]$tagNameProperty.Value)) {
-        Fail "latest release response did not include tag_name"
+    $tag = Get-ReleaseProperty $release "tag_name"
+    $draft = Get-ReleaseProperty $release "draft"
+    $releaseAssets = Get-ReleaseProperty $release "assets"
+    if ($release -isnot [pscustomobject] -or $tag -isnot [string] -or $tag -cnotmatch '\Av?[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:-[0-9A-Za-z.-]+)?\z' -or $draft -isnot [bool] -or $draft -or $releaseAssets -isnot [Array]) {
+        Fail "GitHub returned invalid release metadata."
     }
+    if (-not [string]::IsNullOrEmpty($RequestedVersion) -and $tag -cne $RequestedVersion) {
+        Fail "GitHub returned a different release version than requested."
+    }
+    $name = "solder-$tag-windows-x64.zip"
+    $assets = @($releaseAssets | Where-Object { (Get-ReleaseProperty $_ "name") -ceq $name })
+    if ($assets.Count -ne 1) { Fail "GitHub release must contain exactly one $name asset." }
+    $asset = $assets[0]
+    $size = Get-ReleaseProperty $asset "size"
+    $digest = Get-ReleaseProperty $asset "digest"
+    $url = "https://github.com/$Repo/releases/download/$tag/$name"
+    if (($size -isnot [int] -and $size -isnot [long] -and $size -isnot [double]) -or $size -le 0 -or $size -gt 9007199254740991 -or [math]::Floor($size) -ne $size -or $digest -isnot [string] -or $digest -notmatch '\Asha256:[0-9a-f]{64}\z' -or (Get-ReleaseProperty $asset "browser_download_url") -cne $url) {
+        Fail "GitHub release asset is missing a valid size, SHA-256 digest, or download URL."
+    }
+    $resolvedSource = "github"
+    $body = Get-ReleaseProperty $release "body"
+    if ($Source -ne "GitHub" -and $null -ne $body) {
+        if ($body -isnot [string]) { Fail "GitHub release body is invalid." }
+        $marker = "<!-- solder-release-platform-details"
+        $start = $body.IndexOf($marker, [StringComparison]::Ordinal)
+        if ($start -ge 0) {
+            $prefix = "$marker "
+            if (-not $body.Substring($start).StartsWith($prefix, [StringComparison]::Ordinal)) {
+                Fail "Release download metadata is malformed. Use -DownloadSource GitHub to select GitHub explicitly."
+            }
+            $end = $body.IndexOf(" -->", $start + $prefix.Length, [StringComparison]::Ordinal)
+            if ($end -lt 0 -or $body.IndexOf($marker, $start + $marker.Length, [StringComparison]::Ordinal) -ge 0) {
+                Fail "Release download metadata is malformed. Use -DownloadSource GitHub to select GitHub explicitly."
+            }
+            try { $details = $body.Substring($start + $prefix.Length, $end - $start - $prefix.Length) | ConvertFrom-Json }
+            catch { Fail "Release download metadata is invalid JSON. Use -DownloadSource GitHub to select GitHub explicitly." }
+            if ($details -isnot [pscustomobject]) { Fail "Release download metadata must be an object." }
+            $platformProperty = $details.PSObject.Properties["windows"]
+            if ($null -ne $platformProperty) {
+                $mirror = Get-ReleaseProperty $platformProperty.Value "asset"
+                $mirrorDigest = Get-ReleaseProperty $mirror "digest"
+                $mirrorSize = Get-ReleaseProperty $mirror "size"
+                if ($mirror -isnot [pscustomobject] -or (Get-ReleaseProperty $mirror "name") -cne $name -or ($mirrorSize -isnot [int] -and $mirrorSize -isnot [long] -and $mirrorSize -isnot [double]) -or $mirrorSize -ne $size -or $mirrorDigest -isnot [string] -or $mirrorDigest -notmatch '\Asha256:[0-9a-f]{64}\z' -or $mirrorDigest -ine $digest) {
+                    Fail "Release download metadata does not match the GitHub asset. Use -DownloadSource GitHub to select GitHub explicitly."
+                }
+                $downloadProperty = $mirror.PSObject.Properties["downloadUrl"]
+                if ($null -ne $downloadProperty) {
+                    $candidate = $downloadProperty.Value
+                    if ($candidate -isnot [string] -or $candidate -cnotmatch '\Ahttps://(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.ufs\.sh|utfs\.io)/f/[A-Za-z0-9_-]+\z') {
+                        Fail "Release download URL must be a public UploadThing URL without credentials or query parameters."
+                    }
+                    $url = $candidate
+                    $resolvedSource = "uploadthing"
+                }
+            }
+        }
+    }
+    return [pscustomobject]@{ Version = $tag; AssetName = $name; DownloadUrl = $url; Size = $size; Sha256 = $digest.Substring(7).ToLowerInvariant(); Source = $resolvedSource }
+}
 
-    return [string]$tagNameProperty.Value
+function Assert-ArchiveIntegrity {
+    param([string]$ArchivePath, $Download)
+    if ((Get-Item -LiteralPath $ArchivePath).Length -ne $Download.Size) {
+        Fail "downloaded archive size does not match the GitHub release asset"
+    }
+    # Stream through .NET so this also works when PowerShell 5.1 is launched
+    # from a host whose PSModulePath does not expose Get-FileHash.
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    $stream = $null
+    try {
+        $stream = [System.IO.File]::OpenRead($ArchivePath)
+        $actualHash = [BitConverter]::ToString($sha256.ComputeHash($stream)).Replace("-", "")
+    }
+    finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+        $sha256.Dispose()
+    }
+    if ($actualHash -ine $Download.Sha256) {
+        Fail "downloaded archive SHA-256 does not match the GitHub release asset"
+    }
 }
 
 function Remove-ExistingPath {
@@ -153,12 +245,10 @@ function Resolve-ShortTempRoot {
 
 Assert-WindowsX64
 
-if ([string]::IsNullOrWhiteSpace($Version)) {
-    $Version = Resolve-LatestVersion
-}
-
-$assetName = "solder-$Version-windows-x64.zip"
-$downloadUrl = "https://github.com/$Repo/releases/download/$Version/$assetName"
+$download = Resolve-ReleaseDownload -RequestedVersion $Version -Source $DownloadSource
+$Version = $download.Version
+$assetName = $download.AssetName
+$downloadUrl = $download.DownloadUrl
 $binDir = Join-Path $InstallDir "bin"
 $cliDestination = Join-Path $binDir "solder.exe"
 $solderCadDestination = Join-Path $InstallDir "SolderCAD"
@@ -175,6 +265,9 @@ Repository:      $Repo
 Version:         $Version
 Architecture:    x64
 Download URL:    $downloadUrl
+Download source: $($download.Source)
+Archive bytes:   $($download.Size)
+SHA-256:         $($download.Sha256)
 Install dir:     $InstallDir
 CLI destination: $cliDestination
 SolderCAD dir:   $solderCadDestination
@@ -195,7 +288,15 @@ try {
     New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
 
     Write-Host "Downloading $downloadUrl"
-    Invoke-WebRequest -Uri $downloadUrl -OutFile $archivePath -Headers @{ "User-Agent" = "solder-installer" }
+    try {
+        Invoke-WebRequest -Uri $downloadUrl -OutFile $archivePath -Headers @{ "User-Agent" = "solder-installer" }
+    }
+    catch {
+        Fail "$($download.Source) download failed; no other source was tried. To use GitHub explicitly, rerun with -DownloadSource GitHub."
+    }
+
+    Write-Host "Verifying archive size and SHA-256..."
+    Assert-ArchiveIntegrity -ArchivePath $archivePath -Download $download
 
     Write-Host "Extracting $assetName"
     Expand-ZipArchive -ArchivePath $archivePath -DestinationPath $extractDir
