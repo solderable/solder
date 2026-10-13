@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import fixture from "./fixtures/release.json";
@@ -53,7 +53,8 @@ const scenarios: Scenario[] = [
 ];
 
 function createFixture(scenario: Scenario) {
-  const scratch = mkdtempSync(join(tmpdir(), "solder-installer-contract-"));
+  // Windows shell links expand DOS short names (e.g. RUNNER~1) on save.
+  const scratch = realpathSync.native(mkdtempSync(join(tmpdir(), "solder-installer-contract-")));
   const data = structuredClone(fixture);
   if (macArch === "x64") data.details.macos.asset.name = "solder-1.2.3-macos-x64.zip";
   scenario.edit?.(data);
