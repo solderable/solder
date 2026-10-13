@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import fixture from "./fixtures/release.json";
@@ -53,7 +53,8 @@ const scenarios: Scenario[] = [
 ];
 
 function createFixture(scenario: Scenario) {
-  const scratch = mkdtempSync(join(tmpdir(), "solder-installer-contract-"));
+  // Windows shell links expand DOS short names (e.g. RUNNER~1) on save.
+  const scratch = realpathSync.native(mkdtempSync(join(tmpdir(), "solder-installer-contract-")));
   const data = structuredClone(fixture);
   if (macArch === "x64") data.details.macos.asset.name = "solder-1.2.3-macos-x64.zip";
   scenario.edit?.(data);
@@ -102,7 +103,8 @@ function runBash(scenario: Scenario, dryRun = true) {
   } finally { state.cleanup(); }
 }
 
-function runPowerShell(scenario: Scenario, archiveContent?: string) {
+function runPowerShellDriver(body: string, options: { scenario?: Scenario; archiveContent?: string } = {}) {
+  const { scenario = { name: "Windows shortcut" }, archiveContent } = options;
   const state = createFixture(scenario);
   try {
     if (archiveContent !== undefined) writeFileSync(state.env.SOLDER_TEST_ARCHIVE, archiveContent);
@@ -122,14 +124,20 @@ foreach ($statement in $ast.EndBlock.Statements) {
 }
 function Invoke-RestMethod { Get-Content -LiteralPath $env:SOLDER_TEST_METADATA -Raw | ConvertFrom-Json }
 try {
-  $result = Resolve-ReleaseDownload -RequestedVersion $Version -Source $Source
-  if ($CheckArchive -eq "yes") { Assert-ArchiveIntegrity -ArchivePath $env:SOLDER_TEST_ARCHIVE -Download $result }
-  $result | ConvertTo-Json -Compress
+${body}
 } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }
 `);
     const result = Bun.spawnSync([powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", driver, join(root, "install.ps1"), scenario.version ?? "1.2.3", scenario.source ?? "Auto", archiveContent === undefined ? "no" : "yes"], { env: state.env, stdout: "pipe", stderr: "pipe" });
-    return { code: result.exitCode, output: result.stdout.toString(), error: result.stderr.toString() };
+    return { code: result.exitCode, output: result.stdout.toString(), error: result.stderr.toString(), scratch: state.scratch };
   } finally { state.cleanup(); }
+}
+
+function runPowerShell(scenario: Scenario, archiveContent?: string) {
+  return runPowerShellDriver(`
+  $result = Resolve-ReleaseDownload -RequestedVersion $Version -Source $Source
+  if ($CheckArchive -eq "yes") { Assert-ArchiveIntegrity -ArchivePath $env:SOLDER_TEST_ARCHIVE -Download $result }
+  $result | ConvertTo-Json -Compress
+`, { scenario, archiveContent });
 }
 
 const runtimes = process.platform === "darwin" ? ["macOS", "Windows"] as const : ["Windows"] as const;
@@ -188,4 +196,71 @@ test("Windows rejects a truncated archive before extraction", () => {
   const result = runPowerShell({ name: "truncated archive" }, "ab");
   expect(result.code).toBe(1);
   expect(result.error).toContain("downloaded archive size does not match the GitHub release asset");
+});
+
+// COM shell links are a Windows boundary: run the real implementation there,
+// using only a temporary desktop so local tests never change a user's shortcuts.
+if (process.platform === "win32") {
+  const shortcutSetup = String.raw`
+  $scratch = Split-Path -Parent $env:SOLDER_TEST_METADATA
+  $desktop = Join-Path $scratch "Redirected Desktop"
+  $shortcutPath = Join-Path $desktop "SolderCAD.lnk"
+  $targetPath = Join-Path $scratch "Custom Install\SolderCAD\bin\kicad.exe"
+  New-Item -ItemType Directory -Path (Split-Path -Parent $targetPath) -Force | Out-Null
+  Set-Content -LiteralPath $targetPath -Value "fixture executable"
+  $shell = New-Object -ComObject WScript.Shell
+`;
+  const readShortcut = `
+  $saved = $shell.CreateShortcut($shortcutPath)
+  [pscustomobject]@{
+    TargetPath = $saved.TargetPath
+    WorkingDirectory = $saved.WorkingDirectory
+    IconLocation = $saved.IconLocation
+    Arguments = $saved.Arguments
+    WindowStyle = $saved.WindowStyle
+    DesktopFiles = @(Get-ChildItem -LiteralPath $desktop | Select-Object -ExpandProperty Name)
+  } | ConvertTo-Json -Compress
+`;
+
+  function expectDesktopShortcut(result: ReturnType<typeof runPowerShellDriver>) {
+    expect({ code: result.code, error: result.error }).toEqual({ code: 0, error: "" });
+    const bin = join(result.scratch, "Custom Install", "SolderCAD", "bin");
+    expect(JSON.parse(result.output.trim())).toEqual({
+      TargetPath: join(bin, "kicad.exe"),
+      WorkingDirectory: bin,
+      IconLocation: `${join(bin, "kicad.exe")},0`,
+      Arguments: "",
+      WindowStyle: 1,
+      DesktopFiles: ["SolderCAD.lnk"],
+    });
+  }
+
+  test("Windows saves an absolute GUI shortcut for a relative install directory with spaces", () => {
+    const result = runPowerShellDriver(`${shortcutSetup}
+  Set-Location -LiteralPath $scratch
+  Set-SolderCadDesktopShortcut -ShortcutPath $shortcutPath -TargetPath (Join-Path "Custom Install" "SolderCAD\\bin\\kicad.exe")
+${readShortcut}`);
+    expectDesktopShortcut(result);
+  });
+
+  test("Windows replaces the old shortcut when reinstalling to a different directory", () => {
+    const result = runPowerShellDriver(`${shortcutSetup}
+  New-Item -ItemType Directory -Path $desktop -Force | Out-Null
+  $old = $shell.CreateShortcut($shortcutPath)
+  $old.TargetPath = Join-Path $scratch "Old Install\\SolderCAD\\bin\\kicad.exe"
+  $old.Arguments = "obsolete-project.kicad_pro"
+  $old.Save()
+  Set-SolderCadDesktopShortcut -ShortcutPath $shortcutPath -TargetPath $targetPath
+${readShortcut}`);
+    expectDesktopShortcut(result);
+  });
+}
+
+test("Windows refuses to create a shortcut to a missing executable", () => {
+  const result = runPowerShellDriver(`
+  $scratch = Split-Path -Parent $env:SOLDER_TEST_METADATA
+  Set-SolderCadDesktopShortcut -ShortcutPath (Join-Path $scratch "SolderCAD.lnk") -TargetPath (Join-Path $scratch "missing.exe")
+`);
+  expect(result.code).toBe(1);
+  expect(result.error.trim()).toBe(`cannot create SolderCAD desktop shortcut: executable not found at ${join(result.scratch, "missing.exe")}`);
 });

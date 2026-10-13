@@ -209,6 +209,26 @@ function Add-UserPathEntry {
     }
 }
 
+function Set-SolderCadDesktopShortcut {
+    param([string]$ShortcutPath, [string]$TargetPath)
+
+    if (-not (Test-Path -LiteralPath $TargetPath -PathType Leaf)) {
+        Fail "cannot create SolderCAD desktop shortcut: executable not found at $TargetPath"
+    }
+    $TargetPath = (Get-Item -LiteralPath $TargetPath).FullName
+
+    New-Item -ItemType Directory -Path (Split-Path -Parent $ShortcutPath) -Force | Out-Null
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($ShortcutPath)
+    $shortcut.TargetPath = $TargetPath
+    $shortcut.WorkingDirectory = Split-Path -Parent $TargetPath
+    $shortcut.IconLocation = "$TargetPath,0"
+    $shortcut.Description = "SolderCAD"
+    $shortcut.Arguments = ""
+    $shortcut.WindowStyle = 1
+    $shortcut.Save()
+}
+
 function Expand-ZipArchive {
     param(
         [string]$ArchivePath,
@@ -254,8 +274,16 @@ $cliDestination = Join-Path $binDir "solder.exe"
 $solderCadDestination = Join-Path $InstallDir "SolderCAD"
 $oldSidecarSolderCadDestination = Join-Path $binDir "SolderCAD"
 $kicadAppPath = $solderCadDestination
+$kicadGuiPath = Join-Path $solderCadDestination "bin\kicad.exe"
 $kicadCliPath = Join-Path $solderCadDestination "bin\kicad-cli.exe"
 $kicadDisableLibraryPreload = "1"
+# Ask Windows for the configured desktop, including redirected/OneDrive folders.
+# DoNotVerify lets a first install create the folder without changing a dry run.
+$desktopDir = [Environment]::GetFolderPath("DesktopDirectory", "DoNotVerify")
+if ([string]::IsNullOrWhiteSpace($desktopDir)) {
+    Fail "cannot resolve the current user's desktop folder for the SolderCAD shortcut"
+}
+$desktopShortcutPath = Join-Path $desktopDir "SolderCAD.lnk"
 
 if ($DryRun) {
     @"
@@ -271,6 +299,7 @@ SHA-256:         $($download.Sha256)
 Install dir:     $InstallDir
 CLI destination: $cliDestination
 SolderCAD dir:   $solderCadDestination
+Desktop shortcut: $desktopShortcutPath
 Old sidecar dir: $oldSidecarSolderCadDestination
 KICAD_APP_PATH:  $kicadAppPath
 KICAD_CLI_PATH:  $kicadCliPath
@@ -354,10 +383,14 @@ try {
     $env:KICAD_DISABLE_LIBRARY_PRELOAD = $kicadDisableLibraryPreload
     Remove-Item Env:KICAD_SOFTWARE_RENDERING -ErrorAction SilentlyContinue
 
+    Write-Host "Creating SolderCAD desktop shortcut at $desktopShortcutPath"
+    Set-SolderCadDesktopShortcut -ShortcutPath $desktopShortcutPath -TargetPath $kicadGuiPath
+
     Write-Host ""
     Write-Host "Solder $Version installed."
     Write-Host "CLI:            $cliDestination"
     Write-Host "SolderCAD:      $solderCadDestination"
+    Write-Host "Desktop shortcut: $desktopShortcutPath"
     Write-Host "KICAD_APP_PATH: $kicadAppPath"
     Write-Host "KICAD_CLI_PATH: $kicadCliPath"
     Write-Host "KICAD_DISABLE_LIBRARY_PRELOAD: $kicadDisableLibraryPreload"
