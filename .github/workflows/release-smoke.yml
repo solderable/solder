@@ -6,7 +6,20 @@ on:
       version:
         description: Release tag to test
         required: true
-        default: "0.1.13"
+        default: "1.30.0"
+      draft:
+        description: Download an unpublished draft using repository authentication
+        type: boolean
+        default: false
+      runtime_checks:
+        description: Verify standalone runtimes and project creation (1.30.0 or newer)
+        type: boolean
+        default: false
+
+permissions:
+  # GitHub only exposes unpublished releases to tokens with push permission.
+  # The token is passed only to the download steps, never to the binaries.
+  contents: write
 
 jobs:
   macos:
@@ -16,10 +29,16 @@ jobs:
       - name: Download release asset
         env:
           VERSION: ${{ inputs.version }}
+          DOWNLOAD_DRAFT: ${{ inputs.draft }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           asset="solder-${VERSION}-macos-arm64.zip"
-          curl -fL -o "$asset" "https://github.com/solderable/solder/releases/download/${VERSION}/${asset}"
+          if [[ "$DOWNLOAD_DRAFT" == "true" ]]; then
+            gh release download "$VERSION" --repo solderable/solder --pattern "$asset" --dir .
+          else
+            curl -fL -o "$asset" "https://github.com/solderable/solder/releases/download/${VERSION}/${asset}"
+          fi
           unzip -q "$asset" -d release
 
       - name: Run solder binary
@@ -36,6 +55,37 @@ jobs:
           help_output="$("$bin" --help)"
           printf '%s\n' "$help_output"
           grep -F "Usage: solder [options]" <<<"$help_output"
+
+      - name: Exercise CLI runtimes and project creation
+        if: ${{ inputs.runtime_checks }}
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          bin="release/solder-${VERSION}-macos-arm64/solder"
+          image_output="$("$bin" __verify-native-image-runtime)"
+          printf '%s\n' "$image_output"
+          test "$image_output" = "solder native image runtime ok"
+
+          sentry_output="$("$bin" __verify-remote-tui-sentry)"
+          printf '%s\n' "$sentry_output"
+          test "$sentry_output" = "solder remote tui sentry sdk ok"
+
+          project="$RUNNER_TEMP/solder-release-smoke-project"
+          mkdir "$project"
+          "$bin" init --project "$project" --json > "$RUNNER_TEMP/solder-init.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          scratch = Path(os.environ["RUNNER_TEMP"])
+          project = (scratch / "solder-release-smoke-project").resolve()
+          result = json.loads((scratch / "solder-init.json").read_text())
+          project_file = Path(result["projectFile"]).resolve()
+          assert project_file.is_relative_to(project), result
+          assert project_file.is_file(), result
+          assert (project / "workfiles/main.sheet").is_file(), result
+          print("Solder project initialization passed")
+          PY
 
       - name: Check bundled SolderCAD
         env:
@@ -64,23 +114,33 @@ jobs:
   windows:
     name: Windows remote TUI binary
     runs-on: windows-latest
+    env:
+      VERSION: ${{ inputs.version }}
     steps:
       - name: Download release asset
         shell: pwsh
+        env:
+          DOWNLOAD_DRAFT: ${{ inputs.draft }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = "Stop"
-          $version = "${{ inputs.version }}"
+          $version = $env:VERSION
           $asset = "solder-$version-windows-x64.zip"
-          Invoke-WebRequest `
-            -Uri "https://github.com/solderable/solder/releases/download/$version/$asset" `
-            -OutFile $asset
+          if ($env:DOWNLOAD_DRAFT -eq "true") {
+            gh release download $version --repo solderable/solder --pattern $asset --dir .
+            if ($LASTEXITCODE -ne 0) { throw "Draft asset download failed with $LASTEXITCODE" }
+          } else {
+            Invoke-WebRequest `
+              -Uri "https://github.com/solderable/solder/releases/download/$version/$asset" `
+              -OutFile $asset
+          }
           Expand-Archive -LiteralPath $asset -DestinationPath release -Force
 
       - name: Check Windows installer dry run
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $version = "${{ inputs.version }}"
+          $version = $env:VERSION
           Invoke-WebRequest `
             -Uri "https://raw.githubusercontent.com/solderable/solder/main/install.ps1" `
             -OutFile install.ps1
@@ -98,34 +158,72 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $version = "${{ inputs.version }}"
+          $version = $env:VERSION
           $bin = Join-Path "release" "solder-$version-windows-x64\solder.exe"
           if (-not (Test-Path -LiteralPath $bin -PathType Leaf)) {
             throw "Missing solder.exe at $bin"
           }
           $versionOutput = (& $bin --version 2>&1 | Out-String).Trim()
+          Write-Host $versionOutput
           if ($LASTEXITCODE -ne 0) {
             throw "solder.exe --version exited with $LASTEXITCODE"
           }
-          Write-Host $versionOutput
           if ($versionOutput -ne "solder v$version") {
             throw "unexpected solder.exe --version output: '$versionOutput'"
           }
 
           $helpOutput = (& $bin --help 2>&1 | Out-String).Trim()
+          Write-Host $helpOutput
           if ($LASTEXITCODE -ne 0) {
             throw "solder.exe --help exited with $LASTEXITCODE"
           }
-          Write-Host $helpOutput
           if (-not $helpOutput.Contains("Usage: solder [options]")) {
             throw "solder.exe --help output did not include usage text"
           }
+
+      - name: Exercise CLI runtimes and project creation
+        if: ${{ inputs.runtime_checks }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $bin = Join-Path "release" "solder-$env:VERSION-windows-x64\solder.exe"
+          $imageOutput = (& $bin __verify-native-image-runtime 2>&1 | Out-String).Trim()
+          Write-Host $imageOutput
+          if ($LASTEXITCODE -ne 0 -or $imageOutput -cne "solder native image runtime ok") {
+            throw "solder.exe native image runtime check failed"
+          }
+
+          $sentryOutput = (& $bin __verify-remote-tui-sentry 2>&1 | Out-String).Trim()
+          Write-Host $sentryOutput
+          if ($LASTEXITCODE -ne 0 -or $sentryOutput -cne "solder remote tui sentry sdk ok") {
+            throw "solder.exe Sentry runtime check failed"
+          }
+
+          $project = Join-Path $env:RUNNER_TEMP "solder-release-smoke-project"
+          New-Item -ItemType Directory -Path $project | Out-Null
+          $initOutput = (& $bin init --project $project --json | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) {
+            throw "solder.exe project initialization failed with $LASTEXITCODE"
+          }
+          $created = $initOutput | ConvertFrom-Json
+          $projectFile = [System.IO.Path]::GetFullPath($created.projectFile)
+          $projectPrefix = [System.IO.Path]::GetFullPath($project) + [System.IO.Path]::DirectorySeparatorChar
+          if (-not $projectFile.StartsWith($projectPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Initialized project file is outside the requested directory"
+          }
+          if (-not (Test-Path -LiteralPath $projectFile -PathType Leaf)) {
+            throw "Initialized project file is missing"
+          }
+          if (-not (Test-Path -LiteralPath (Join-Path $project "workfiles\main.sheet") -PathType Leaf)) {
+            throw "Initialized drawing-language schematic is missing"
+          }
+          Write-Host "Solder project initialization passed"
 
       - name: Check bundled SolderCAD
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $version = "${{ inputs.version }}"
+          $version = $env:VERSION
           $root = Join-Path "release" "solder-$version-windows-x64"
           $solderCad = Join-Path $root "SolderCAD"
           $binDir = Join-Path $root "SolderCAD\bin"
