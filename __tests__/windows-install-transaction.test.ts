@@ -10,6 +10,10 @@ if (process.platform === "win32") {
   const scenarios: Record<string, string> = {
     "only one installer owns the shared lease": "lease",
     "reopened children do not inherit either installer lease": "lease-child-inheritance",
+    "waits for a temporary Windows file lock before publishing": "transient-publish-lock",
+    "preserves the old pair when a Windows file lock persists": "persistent-publish-lock",
+    "does not move a changed source on a publication retry": "changed-source-during-move-retry",
+    "does not move an app when a new process starts during retry": "new-process-during-move-retry",
     "restores an interrupted installation without network access": "offline-interrupted-recovery",
     "recovers when verification is interrupted with its executable still open": "interrupted-verifier",
     "refuses known component downgrades while allowing unknown versions": "downgrade-policy",

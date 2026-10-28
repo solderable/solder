@@ -18,6 +18,25 @@ function Assert-Condition([bool]$Value, [string]$Message) {
     if (-not $Value) { throw $Message }
 }
 
+function Open-TestLockedFile([string]$Path) {
+    if (-not ('SolderTest.LockedFile' -as [type])) {
+        Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+namespace SolderTest {
+  public static class LockedFile {
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    public static extern SafeFileHandle CreateFile(string path, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
+  }
+}
+'@
+    }
+    $handle=[SolderTest.LockedFile]::CreateFile($Path,[uint32]2147483648,3,[IntPtr]::Zero,3,0,[IntPtr]::Zero)
+    if($handle.IsInvalid){throw 'Could not hold the fixture file without delete sharing'}
+    return $handle
+}
+
 function New-TestFixture([string]$Root) {
     $bin = Join-Path $Root 'bin'
     $app = Join-Path $Root 'SolderCAD'
@@ -56,6 +75,73 @@ New-Item -ItemType Directory -Path $root | Out-Null
 try {
     $root = Resolve-PhysicalPath $root
     switch ($Scenario) {
+        'transient-publish-lock' {
+            New-TestFixture $root
+            $app=Join-Path $root 'SolderCAD';$cli=Join-Path $root 'bin\solder.exe'
+            $tx=Join-Path $root '.solder-installer-transaction';$payload=Join-Path $tx 'payload'
+            $original=@((Get-TargetIdentity $app $true),(Get-TargetIdentity $cli $false),$null)
+            $handle=Open-TestLockedFile (Join-Path $app 'old.txt')
+            $release={ $handle.Dispose() }.GetNewClosure()
+            $state=[hashtable]::Synchronized(@{Stage='';Message=''})
+            try { Publish-SolderTransaction -InstallRoot $root -PayloadRoot $payload -Original $original -CoordinatorState $state -OnMoveRetry $release }
+            finally { $handle.Dispose() }
+            Assert-Condition ($state.Stage -ceq 'installing' -and $state.Message -like '*release installation files*') 'a temporary Windows lock did not surface a waiting state'
+            Recover-SolderTransaction $root
+            Assert-Condition ((Get-Content (Join-Path $app 'new.txt') -Raw).Trim() -ceq 'new app' -and
+                (Get-Content $cli -Raw).Trim() -ceq 'new cli' -and -not (Test-Path $tx)) 'publication did not complete after the lock was released'
+        }
+        'persistent-publish-lock' {
+            New-TestFixture $root
+            $app=Join-Path $root 'SolderCAD';$cli=Join-Path $root 'bin\solder.exe'
+            $tx=Join-Path $root '.solder-installer-transaction';$payload=Join-Path $tx 'payload'
+            $original=@((Get-TargetIdentity $app $true),(Get-TargetIdentity $cli $false),$null)
+            $handle=Open-TestLockedFile (Join-Path $app 'old.txt')
+            $failed=$false
+            try { Publish-SolderTransaction $root $payload $original } catch { $failed=$true } finally { $handle.Dispose() }
+            Assert-Condition $failed 'a persistent file lock did not stop publication'
+            Recover-SolderTransaction $root
+            Assert-Condition ((Get-Content (Join-Path $app 'old.txt') -Raw).Trim() -ceq 'old app' -and
+                (Get-Content $cli -Raw).Trim() -ceq 'old cli' -and -not (Test-Path $tx)) 'a persistent file lock damaged the original pair'
+        }
+        'changed-source-during-move-retry' {
+            New-TestFixture $root
+            $app=Join-Path $root 'SolderCAD';$destination=Join-Path $root 'retry-destination'
+            $aside=Join-Path $root 'original-aside'
+            $identity=Get-TargetIdentity $app $true
+            $handle=Open-TestLockedFile (Join-Path $app 'old.txt')
+            $change={ $handle.Dispose(); [IO.Directory]::Move($app,$aside); New-Item -ItemType Directory -Path $app | Out-Null; [IO.File]::WriteAllText((Join-Path $app 'foreign.txt'),'foreign') }.GetNewClosure()
+            $failed=$false
+            try { Move-SolderTransactionItem $root $app $destination $identity $true $null $change } catch { $failed=$_.Exception.Message -like '*changed while waiting*' } finally { $handle.Dispose() }
+            Assert-Condition ($failed -and (Test-Path (Join-Path $app 'foreign.txt')) -and
+                (Test-Path (Join-Path $aside 'old.txt')) -and -not (Test-Path $destination)) 'a changed source was moved during retry'
+        }
+        'new-process-during-move-retry' {
+            New-TestFixture $root
+            $app=Join-Path $root 'SolderCAD';$bin=Join-Path $app 'bin';$destination=Join-Path $root 'retry-destination'
+            New-Item -ItemType Directory -Path $bin | Out-Null
+            $exe=Join-Path $bin 'kicad.exe';$ready=Join-Path $root 'child-ready';$finish=Join-Path $root 'child-finish'
+            Add-Type -OutputAssembly $exe -OutputType WindowsApplication -TypeDefinition 'using System.IO; using System.Threading; public static class Child { public static void Main(string[] a) { File.WriteAllText(a[0],"ready"); while (!File.Exists(a[1])) Thread.Sleep(50); } }'
+            $identity=Get-TargetIdentity $app $true
+            $handle=Open-TestLockedFile (Join-Path $app 'old.txt')
+            $context=@{Child=$null}
+            $start={
+                $handle.Dispose()
+                $context.Child=Start-Process -FilePath $exe -ArgumentList @($ready,$finish) -PassThru
+                $timer=[Diagnostics.Stopwatch]::StartNew()
+                while(-not [IO.File]::Exists($ready) -and $timer.ElapsedMilliseconds -lt 10000){Start-Sleep -Milliseconds 50}
+                if(-not [IO.File]::Exists($ready)){throw 'The later fixture process did not start'}
+            }.GetNewClosure()
+            $failed=$false
+            try { Move-SolderTransactionItem $root $app $destination $identity $true $null $start } catch { $failed=$true }
+            finally { $handle.Dispose() }
+            try {
+                Assert-Condition ($failed -and $null -ne $context.Child -and -not $context.Child.HasExited -and
+                    (Test-Path (Join-Path $app 'old.txt')) -and -not (Test-Path $destination)) 'a later target process was closed or its app was moved'
+            } finally {
+                [IO.File]::WriteAllText($finish,'exit')
+                if($context.Child -and -not $context.Child.WaitForExit(5000)){throw 'The disposable later process did not exit normally'}
+            }
+        }
         'offline-interrupted-recovery' {
             New-TestFixture $root
             $paths = Start-TestJournal $root

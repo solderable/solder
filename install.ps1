@@ -756,8 +756,47 @@ function Recover-SolderFailedPublication {
     Recover-SolderTransaction -InstallRoot $InstallRoot
 }
 
+function Move-SolderTransactionItem {
+    param([string]$InstallRoot, [string]$Source, [string]$Destination, [string]$ExpectedIdentity,
+          [bool]$Directory, [object]$State, [scriptblock]$OnRetry)
+    $deadline = [Diagnostics.Stopwatch]::StartNew()
+    $notified = $false
+    while ($true) {
+        if ((Get-TargetIdentity $Source $Directory) -cne $ExpectedIdentity) {
+            Fail 'A Solder component changed while waiting for Windows. Recovery files were preserved.'
+        }
+        $parent = [IO.Path]::GetDirectoryName($Destination)
+        $name = [IO.Path]::GetFileName($Destination)
+        $conflict = @([IO.Directory]::EnumerateFileSystemEntries($parent) | Where-Object {
+            [IO.Path]::GetFileName($_).Equals($name, [StringComparison]::OrdinalIgnoreCase)
+        })
+        if ($conflict.Count) { Fail 'A Solder recovery path appeared while installing. Recovery files were preserved.' }
+        Assert-SolderProcessesClosed -InstallRoot $InstallRoot
+        try {
+            if ($Directory) { [IO.Directory]::Move($Source, $Destination) }
+            else { [IO.File]::Move($Source, $Destination) }
+            return
+        } catch {
+            $failure = $_
+            $cause = $_.Exception
+            while ($null -ne $cause.InnerException) { $cause = $cause.InnerException }
+            # ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION.
+            if ($cause.HResult -notin @(-2147024891, -2147024864, -2147024863) -or
+                $deadline.ElapsedMilliseconds -ge 5000) { throw $failure }
+            if (-not $notified) {
+                Set-CoordinatorProgress $State 'installing' 'Waiting briefly for Windows to release installation files...'
+                if ($null -ne $State) { Write-SolderCoordinatorLog $InstallRoot 'installing' 'retry' 'Waiting for Windows to release an installation file.' }
+                $notified = $true
+            }
+            if ($null -ne $OnRetry) { & $OnRetry }
+            Start-Sleep -Milliseconds 250
+        }
+    }
+}
+
 function Publish-SolderTransaction {
-    param([string]$InstallRoot, [string]$PayloadRoot, [object[]]$Original, [string]$NewCliPath)
+    param([string]$InstallRoot, [string]$PayloadRoot, [object[]]$Original, [string]$NewCliPath,
+          [object]$CoordinatorState, [scriptblock]$OnMoveRetry)
     if (-not $NewCliPath) { $NewCliPath = Join-Path $PayloadRoot 'solder.exe' }
     $tx = Join-Path $InstallRoot '.solder-installer-transaction'
     $app = Join-Path $InstallRoot 'SolderCAD'
@@ -779,11 +818,11 @@ function Publish-SolderTransaction {
     }
     $record = [ordered]@{schemaVersion=3;token=$token;oldApp=$Original[0];oldCli=$Original[1];oldSidecar=$Original[2];newApp=$newApp;newCli=$newCli} | ConvertTo-Json -Compress
     Write-TransactionRecord -Path (Join-Path $tx 'journal.json') -Content $record
-    if ($null -ne $Original[0]) { [IO.Directory]::Move($app, $paths.backupApp) }
-    if ($null -ne $Original[1]) { [IO.File]::Move($cli, $paths.backupCli) }
-    if ($null -ne $Original[2]) { [IO.Directory]::Move($sidecar, $paths.backupSidecar) }
-    [IO.Directory]::Move((Join-Path $PayloadRoot 'SolderCAD'), $app)
-    [IO.File]::Move($NewCliPath, $cli)
+    if ($null -ne $Original[0]) { Move-SolderTransactionItem $InstallRoot $app $paths.backupApp $Original[0] $true $CoordinatorState $OnMoveRetry }
+    if ($null -ne $Original[1]) { Move-SolderTransactionItem $InstallRoot $cli $paths.backupCli $Original[1] $false $CoordinatorState $OnMoveRetry }
+    if ($null -ne $Original[2]) { Move-SolderTransactionItem $InstallRoot $sidecar $paths.backupSidecar $Original[2] $true $CoordinatorState $OnMoveRetry }
+    Move-SolderTransactionItem $InstallRoot (Join-Path $PayloadRoot 'SolderCAD') $app $newApp $true $CoordinatorState $OnMoveRetry
+    Move-SolderTransactionItem $InstallRoot $NewCliPath $cli $newCli $false $CoordinatorState $OnMoveRetry
     Write-TransactionRecord -Path (Join-Path $tx 'committed') -Content 'committed-v1'
 }
 
@@ -2405,7 +2444,7 @@ try {
             Set-CoordinatorProgress $CoordinatorState 'installing' 'Installing the update...'
         }
         Write-Host "Installing Solder and SolderCAD together..."
-        Publish-SolderTransaction -InstallRoot $InstallDir -PayloadRoot $payloadRoot -Original $original -NewCliPath $verifiedCli
+        Publish-SolderTransaction -InstallRoot $InstallDir -PayloadRoot $payloadRoot -Original $original -NewCliPath $verifiedCli -CoordinatorState $CoordinatorState
         if ($interactive) { $CoordinatorState.PublicationCommitted = $true }
     }
     catch {
