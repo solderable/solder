@@ -56,6 +56,22 @@ New-Item -ItemType Directory -Path $root | Out-Null
 try {
     $root = Resolve-PhysicalPath $root
     switch ($Scenario) {
+        'offline-interrupted-recovery' {
+            New-TestFixture $root
+            $paths = Start-TestJournal $root
+            [IO.Directory]::Move((Join-Path $root 'SolderCAD'), $paths.backupApp)
+            [IO.File]::Move((Join-Path $root 'bin\solder.exe'), $paths.backupCli)
+            function Invoke-RestMethod { throw 'fixture network unavailable' }
+            $state = [hashtable]::Synchronized(@{ Stage=''; Message=''; CancelRequested=$false; CanCancel=$true; ClosedAny=$false; PublicationCommitted=$false; PublicationComplete=$false; SetupComplete=$false; PendingRestore=$false; Session=$null })
+            $installerScript = [scriptblock]::Create([IO.File]::ReadAllText($Installer))
+            $failed = $false
+            try { & $installerScript -InstallDir $root -Version '1.36.0' -NoUserIntegration -InternalCoordinator -CoordinatorState $state }
+            catch { $failed = $true }
+            Assert-Condition $failed 'the offline release lookup unexpectedly succeeded'
+            Assert-Condition ((Get-Content (Join-Path $root 'SolderCAD\old.txt') -Raw).Trim() -ceq 'old app') 'offline recovery did not restore the old app'
+            Assert-Condition ((Get-Content (Join-Path $root 'bin\solder.exe') -Raw).Trim() -ceq 'old cli') 'offline recovery did not restore the old CLI'
+            Assert-Condition (-not (Test-Path (Join-Path $root '.solder-installer-transaction'))) 'offline recovery left the transaction blocking launch'
+        }
         'lease-v2-port' {
             $owner = Enter-SolderInstallLease $LeaseRoot
             try {

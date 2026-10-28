@@ -60,13 +60,19 @@ Install a specific release:
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.1.13
 ```
 
-The Windows installer downloads `solder-<version>-windows-x64.zip`, installs `solder.exe` to `$env:LOCALAPPDATA\Solder\bin`, installs the single SolderCAD copy to `$env:LOCALAPPDATA\Solder\SolderCAD`, creates a **SolderCAD** desktop shortcut, adds the installed `bin` directory to the user `PATH` if needed, sets user `KICAD_APP_PATH`, `KICAD_CLI_PATH`, and `KICAD_DISABLE_LIBRARY_PRELOAD` variables for the bundled SolderCAD tools, and clears any previous `KICAD_SOFTWARE_RENDERING` override. Reinstalling updates the same shortcut to the selected installation directory.
+The Windows installer downloads `solder-<version>-windows-x64.zip`, installs `solder.exe` to `$env:LOCALAPPDATA\Solder\bin`, installs the single SolderCAD copy to `$env:LOCALAPPDATA\Solder\SolderCAD`, creates **SolderCAD** and **SolderCAD Repair** desktop shortcuts, adds the installed `bin` directory to the user `PATH` if needed, sets user `KICAD_APP_PATH`, `KICAD_CLI_PATH`, and `KICAD_DISABLE_LIBRARY_PRELOAD` variables for the bundled SolderCAD tools, and clears any previous `KICAD_SOFTWARE_RENDERING` override. The SolderCAD shortcut checks essential files and offers repair when they are damaged or missing.
 
-The x64 release also runs under emulation on Windows 11 ARM64. Before installing
-over an existing copy, save your work and close its SolderCAD windows, editors,
-and Solder terminals. The installer never closes them for you. It verifies and
-stages both components before replacing either; if installation is interrupted,
-run the installer again to recover the previous installation.
+The x64 release also runs under emulation on Windows 11 ARM64. An interactive
+update downloads and verifies both components while SolderCAD remains open. It
+then asks the open windows to close normally, so their usual Save and Cancel
+dialogs remain in control, and reopens saved documents after installation.
+Recent Solder terminal sessions can close cooperatively; older terminal
+sessions may need to be closed before retrying. No process is forcibly closed by
+the installer. Older SolderCAD releases may not report documents changed by
+Save As or other open windows, so check them after their first update.
+If installation is interrupted, run the installer again to recover the previous
+installation. Noninteractive installations still require existing windows and
+terminal sessions to be closed before starting.
 The default latest-release installation refuses to replace a known newer
 component. When an installed component's version cannot be determined, it warns
 that the selected release will replace it. An explicit `-Version` deliberately
@@ -79,6 +85,10 @@ variables or desktop shortcut, specify its install directory and use
 ```powershell
 .\install.ps1 -InstallDir 'C:\path\to\Solder' -NoUserIntegration
 ```
+
+`-ManageLauncher` can be combined with `-NoUserIntegration` to migrate existing
+shortcuts belonging to that same installation to the repairable launcher; it
+does not create or replace shortcuts belonging to another installation.
 
 Both installers support dry-run mode:
 
@@ -97,7 +107,7 @@ The older `install-solder-release.sh` script is a separate GitHub/custom-URL
 installer. Use `install.sh` or `install.ps1` above for CDN downloads and checksum
 verification.
 
-Installer download contracts run with `bun test __tests__/installers.test.ts`.
+Installer contracts run with `bun test __tests__/installers.test.ts __tests__/windows-install-transaction.test.ts __tests__/windows-seamless-update.test.ts`.
 CI runs the macOS shell/JXA path on macOS and the Windows path with native
 Windows PowerShell 5.1; macOS also exercises the PowerShell functions with `pwsh`.
 The fixtures replace network responses and check archive integrity before

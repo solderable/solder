@@ -24,7 +24,7 @@ jobs:
         with:
           bun-version: latest
       - name: Verify release selection, integrity, and Windows transactions
-        run: bun test --timeout 30000 __tests__/installers.test.ts __tests__/windows-install-transaction.test.ts
+        run: bun test --timeout 30000 __tests__/installers.test.ts __tests__/windows-install-transaction.test.ts __tests__/windows-seamless-update.test.ts
 
   windows-release-recovery:
     name: Recover an existing Windows release
