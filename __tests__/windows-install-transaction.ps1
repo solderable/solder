@@ -68,7 +68,7 @@ try {
             New-Item -ItemType Directory $tx | Out-Null
             Write-TransactionRecord (Join-Path $tx 'owner') 'solder-installer-transaction-v1'
             Set-Content (Join-Path $tx 'unexecuted-payload.txt') 'safe'
-            $verifier = Join-Path $root '.solder-installer-verified-0123456789abcdef0123456789abcdef.exe'
+            $verifier = Join-Path $root '.solder-verify-0123456789abcdef0123456789abcdef.exe'
             Add-Type -OutputAssembly $verifier -OutputType ConsoleApplication -TypeDefinition 'public class VerifierFixture { public static void Main() { System.Threading.Thread.Sleep(120000); } }'
             $child = Start-Process -FilePath $verifier -WindowStyle Hidden -PassThru
             try {
@@ -202,7 +202,7 @@ try {
             Assert-Condition ((Get-Content (Join-Path $testInstall 'bin\solder.exe') -Raw).Trim() -ceq 'old cli') 'old CLI was changed'
             Assert-Condition ((Get-Content (Join-Path $testInstall 'SolderCAD\old.txt') -Raw).Trim() -ceq 'old app') 'old app was changed'
             Assert-Condition (-not (Test-Path (Join-Path $testInstall '.solder-installer-transaction'))) 'failed validation left a blocking transaction'
-            $unpublished = @(Get-ChildItem -LiteralPath $testInstall -File -Filter '.solder-installer-verified-*.exe')
+            $unpublished = @(Get-ChildItem -LiteralPath $testInstall -File -Filter '.solder-verify-*.exe')
             Assert-Condition ($unpublished.Count -eq 1) 'the executed unpublished CLI was not preserved'
         }
         'lease' {

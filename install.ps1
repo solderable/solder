@@ -847,7 +847,7 @@ try {
     foreach ($oldBackup in @(Get-ChildItem -LiteralPath $InstallDir -Force -Filter '.solder-installer-*-previous-*')) {
         Write-Warning "An earlier installer retained a previous component at '$($oldBackup.FullName)'. It will be preserved."
     }
-    foreach ($oldVerifier in @(Get-ChildItem -LiteralPath $InstallDir -File -Force -Filter '.solder-installer-verified-*.exe')) {
+    foreach ($oldVerifier in @(Get-ChildItem -LiteralPath $InstallDir -File -Force -Filter '.solder-verify-*.exe')) {
         Write-Warning "An earlier installer retained an unpublished verifier at '$($oldVerifier.FullName)'. It will be preserved."
     }
     $original = @((Get-TargetIdentity $solderCadDestination $true), (Get-TargetIdentity $cliDestination $false), (Get-TargetIdentity $oldSidecarSolderCadDestination $true))
@@ -912,7 +912,9 @@ try {
         # Verify and publish a byte-identical sibling outside the active
         # transaction. A hard stop while the image is running cannot hold the
         # recovery directory open, and publication uses a file rename.
-        $verifiedCli = Join-Path $InstallDir ('.solder-installer-verified-' + [Guid]::NewGuid().ToString('N') + '.exe')
+        # Avoid "installer"/"setup" in the executable name: Windows installer
+        # detection can otherwise request elevation for an unsigned CLI.
+        $verifiedCli = Join-Path $InstallDir ('.solder-verify-' + [Guid]::NewGuid().ToString('N') + '.exe')
         [IO.File]::Copy($payloadCli, $verifiedCli)
         if ((Get-FileSha256 $payloadCli) -cne (Get-FileSha256 $verifiedCli)) {
             Fail "The staged Solder executable could not be verified."
