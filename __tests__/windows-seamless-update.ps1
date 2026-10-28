@@ -848,11 +848,12 @@ public class GuiFixture {
         executable=$standaloneExe;project=$newStandaloneDocument;frameType='pcb';managerHwnd='0';managerStartTime='0';managerProject='';documentExisted=$false}|ConvertTo-Json -Compress
     Write-TransactionRecord $standalonePath $standaloneRecord
     $window=@($state.Session.Windows | Where-Object {$_.Process.Id -eq $standalone.Id -and $_.Handle -eq $standaloneHandle})[0]
-    [IO.File]::WriteAllText($newStandaloneDocument,'foreign path occupant')
+    [void][IO.Directory]::CreateDirectory($newStandaloneDocument)
     $failed=$false
     try { [void](Get-SolderReopenEntry $state.Session $window '' 0 $true) } catch {$failed=$true}
-    Assert-Condition ($failed -and ([IO.File]::ReadAllText($newStandaloneDocument)) -ceq 'foreign path occupant') 'an occupied new standalone path was accepted or modified'
-    [IO.File]::Delete($newStandaloneDocument)
+    Assert-Condition ($failed -and (Test-Path -LiteralPath $newStandaloneDocument -PathType Container) -and
+        @([IO.Directory]::EnumerateFileSystemEntries($newStandaloneDocument)).Count -eq 0) 'an occupied new standalone path was accepted or modified'
+    [IO.Directory]::Delete($newStandaloneDocument)
     $entry=Get-SolderReopenEntry $state.Session $window '' 0 $true
     Set-SolderSessionReopening $state
     $target=Get-SolderStandaloneReopenTarget $root $state $window $entry 0
