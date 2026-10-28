@@ -1485,7 +1485,12 @@ function Open-SolderPreparedHosts {
                 $request = [Text.Encoding]::ASCII.GetBytes("prepare $($State.Session.Nonce)`n")
                 $pipe.Write($request, 0, $request.Length)
                 $pipe.Flush()
-                if ((Read-SolderControlReply $pipe $State) -cne "ready`n") {
+                $reply = Read-SolderControlReply $pipe $State
+                if ($reply -ceq "blocked`n") {
+                    Set-CoordinatorProgress $State 'chat-busy' 'Let Solder Chat finish, or stop its current and queued work. Answer any open question, then choose Retry.'
+                    Fail 'Solder Chat is still working. Your windows remain open.'
+                }
+                if ($reply -cne "ready`n") {
                     Fail 'A SolderCAD chat session could not save its draft. No editor was closed.'
                 }
                 $process = [Diagnostics.Process]::GetProcessById($captured.Id)
@@ -1924,6 +1929,8 @@ function Start-SolderCoordinator {
                         $label.Text = 'Update cancelled. Your work was not force-closed.'
                     } elseif ($state.Stage -in @('checking', 'downloading')) {
                         $label.Text = 'The download could not finish. Check your connection and choose Retry. SolderCAD remains unchanged.'
+                    } elseif ($state.Stage -eq 'chat-busy') {
+                        $label.Text = 'Let Solder Chat finish, or stop its current and queued work. Answer any open question, then choose Retry.'
                     } elseif ($state.Stage -eq 'closing') {
                         $label.Text = 'SolderCAD or a Solder terminal could not close safely. Finish saving or close the session, then choose Retry.'
                     } else {

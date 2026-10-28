@@ -214,6 +214,17 @@ public class CooperativeFixture {
     Assert-Condition ($disconnectedHost.HasExited) 'a disconnected prepared chat host was not drained'
     Complete-SolderReopenSession $state
 
+    Remove-Item -LiteralPath $env:SOLDER_TEST_PIPE_READY
+    $busyHost = Start-Process -FilePath $cli -ArgumentList 'ui-host blocked' -PassThru -WindowStyle Hidden
+    $children.Add($busyHost)
+    Wait-For { Test-Path -LiteralPath $env:SOLDER_TEST_PIPE_READY } 'the busy chat fixture did not start'
+    $state = New-State
+    New-SolderReopenSession $root $state
+    $blocked = $false
+    try { [void](Open-SolderPreparedHosts $root $state) } catch { $blocked = $true }
+    Assert-Condition ($blocked -and $state.Stage -ceq 'chat-busy') 'busy chat did not produce the actionable retry state'
+    Complete-SolderReopenSession $state
+
     # Real top-level fixture windows exercise WM_CLOSE and cancellation without
     # using desktop mouse/keyboard automation or touching user applications.
     $gui = Join-Path $root 'SolderCAD\bin\kicad.exe'
