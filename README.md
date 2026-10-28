@@ -62,6 +62,20 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.1.13
 
 The Windows installer downloads `solder-<version>-windows-x64.zip`, installs `solder.exe` to `$env:LOCALAPPDATA\Solder\bin`, installs the single SolderCAD copy to `$env:LOCALAPPDATA\Solder\SolderCAD`, creates a **SolderCAD** desktop shortcut, adds the installed `bin` directory to the user `PATH` if needed, sets user `KICAD_APP_PATH`, `KICAD_CLI_PATH`, and `KICAD_DISABLE_LIBRARY_PRELOAD` variables for the bundled SolderCAD tools, and clears any previous `KICAD_SOFTWARE_RENDERING` override. Reinstalling updates the same shortcut to the selected installation directory.
 
+The x64 release also runs under emulation on Windows 11 ARM64. Before installing
+over an existing copy, save your work and close its SolderCAD windows, editors,
+and Solder terminals. The installer never closes them for you. It verifies and
+stages both components before replacing either; if installation is interrupted,
+run the installer again to recover the previous installation.
+
+To repair a custom installation without changing the current user's environment
+variables or desktop shortcut, specify its install directory and use
+`-NoUserIntegration`:
+
+```powershell
+.\install.ps1 -InstallDir 'C:\path\to\Solder' -NoUserIntegration
+```
+
 Both installers support dry-run mode:
 
 ```bash
