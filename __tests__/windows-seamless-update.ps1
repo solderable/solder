@@ -239,7 +239,7 @@ using System.Runtime.InteropServices;
 public class GuiFixture {
  [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern bool SetPropW(IntPtr hwnd, string name, IntPtr value);
  [STAThread] public static void Main(string[] args) {
-  if (args.Length == 0 || (args[0] != "close" && args[0] != "veto" && args[0] != "delayed" && args[0] != "legacy" && args[0] != "owned")) {
+  if (args.Length == 0 || (args[0] != "close" && args[0] != "veto" && args[0] != "delayed" && args[0] != "legacy" && args[0] != "owned" && args[0] != "untitled")) {
    File.AppendAllText(Environment.GetEnvironmentVariable("SOLDER_TEST_OPENED"), Path.GetFileName(Application.ExecutablePath) + "|" + (args.Length == 0 ? "(empty)" : args[0]) + "\n"); return;
   }
   var f = new Form(); f.Text="Solder fixture"; f.StartPosition=FormStartPosition.Manual;
@@ -249,6 +249,9 @@ public class GuiFixture {
    var hidden = new Form(); hidden.Text="Hidden child";
    hidden.HandleCreated += (s,a) => SetPropW(hidden.Handle,"SolderCAD.UpdateCloseProtocol.v1",new IntPtr(1));
    hidden.Show(f); hidden.Hide();
+  };
+  if (args[0]=="untitled") f.Shown += (sender,e) => {
+   var unknown = new Form(); unknown.Text=""; unknown.ShowInTaskbar=false; unknown.Show(f);
   };
   f.FormClosing += (sender,e) => { if(args[0]=="veto") e.Cancel=true; if(args[0]=="delayed") Thread.Sleep(1500); };
   Application.Run(f);
@@ -277,6 +280,20 @@ public class GuiFixture {
     Complete-SolderReopenSession $state
     Stop-Process -Id $legacy.Id -Force
     [void]$legacy.WaitForExit(5000)
+
+    $untitled = Start-Process -FilePath $gui -ArgumentList 'untitled' -PassThru
+    $children.Add($untitled)
+    Wait-For { @([SolderInstaller.Windows]::TopLevelWindows($untitled.Id)).Count -ge 2 } 'the untitled fixture window did not start'
+    $state = New-State
+    New-SolderReopenSession $root $state
+    $untitled.Refresh()
+    $refused = $false
+    try { Close-SolderForUpdate $root $state $untitled.Id ([long]$untitled.MainWindowHandle) }
+    catch { $refused = $_.Exception.Message -like '*older SolderCAD window*' }
+    Assert-Condition ($refused -and -not $untitled.HasExited) 'an unknown untitled window was closed'
+    Complete-SolderReopenSession $state
+    Stop-Process -Id $untitled.Id -Force
+    [void]$untitled.WaitForExit(5000)
 
     $owned = Start-Process -FilePath $gui -ArgumentList 'owned' -PassThru
     $children.Add($owned)

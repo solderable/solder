@@ -915,7 +915,6 @@ namespace SolderInstaller {
     [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr parameter);
     [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
     [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr hwnd);
-    [DllImport("user32.dll")] private static extern int GetWindowTextLengthW(IntPtr hwnd);
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
     [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)] private static extern IntPtr SendMessageTimeoutW(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam, uint flags, uint timeout, out IntPtr result);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern IntPtr GetPropW(IntPtr hwnd, string name);
@@ -926,7 +925,7 @@ namespace SolderInstaller {
       var result = new List<long>();
       EnumWindows((hwnd, unused) => {
         uint owner; GetWindowThreadProcessId(hwnd, out owner);
-        if (owner == pid && IsWindowVisible(hwnd) && GetWindowTextLengthW(hwnd) > 0)
+        if (owner == pid && IsWindowVisible(hwnd))
           result.Add(hwnd.ToInt64());
         return true;
       }, IntPtr.Zero);
