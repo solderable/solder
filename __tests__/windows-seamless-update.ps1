@@ -209,7 +209,15 @@ public class CooperativeFixture {
     $state = New-State
     New-SolderReopenSession $root $state
     $held = Open-SolderPreparedHosts $root $state
-    try { Close-SolderPreparedHosts $held $state }
+    Wait-For { -not [SolderInstaller.Windows]::PipeReady($held[0].Pipe.SafePipeHandle.DangerousGetHandle()) } 'the revoked fixture pipe remained connected'
+    $refused = $false
+    try { Assert-SolderPreparedHosts $held $state } catch { $refused = $true }
+    Assert-Condition $refused 'a revoked preparation was accepted before any editor closed'
+    $state.ClosedAny = $true
+    try {
+        Assert-SolderPreparedHosts $held $state
+        Close-SolderPreparedHosts $held $state
+    }
     finally { foreach ($entry in $held) { $entry.Pipe.Dispose(); $entry.Process.Dispose() } }
     Assert-Condition ($disconnectedHost.HasExited) 'a disconnected prepared chat host was not drained'
     Complete-SolderReopenSession $state
@@ -294,6 +302,28 @@ public class GuiFixture {
     Complete-SolderReopenSession $state
     Stop-Process -Id $untitled.Id -Force
     [void]$untitled.WaitForExit(5000)
+
+    # A prepared chat can revoke its proof while the updater is about to close
+    # an editor. The real close path must leave that editor untouched.
+    Remove-Item -LiteralPath $env:SOLDER_TEST_PIPE_READY -ErrorAction SilentlyContinue
+    $revokedHost = Start-Process -FilePath $cli -ArgumentList 'ui-host disconnect' -PassThru -WindowStyle Hidden
+    $children.Add($revokedHost)
+    Wait-For { Test-Path -LiteralPath $env:SOLDER_TEST_PIPE_READY } 'the revoked host fixture did not start'
+    $guardedWindow = Start-Process -FilePath $gui -ArgumentList 'close' -PassThru
+    $children.Add($guardedWindow)
+    Wait-For { $guardedWindow.Refresh(); $guardedWindow.MainWindowHandle -ne 0 } 'the guarded editor fixture did not start'
+    $state = New-State
+    New-SolderReopenSession $root $state
+    $held = Open-SolderPreparedHosts $root $state
+    Wait-For { -not [SolderInstaller.Windows]::PipeReady($held[0].Pipe.SafePipeHandle.DangerousGetHandle()) } 'the fixture did not revoke its prepared host'
+    $refused = $false
+    try { Close-SolderForUpdate $root $state $guardedWindow.Id ([long]$guardedWindow.MainWindowHandle) $held }
+    catch { $refused = $true }
+    finally { foreach ($entry in $held) { $entry.Pipe.Dispose(); $entry.Process.Dispose() } }
+    Assert-Condition ($refused -and -not $guardedWindow.HasExited) 'a revoked chat proof allowed its editor to close'
+    Complete-SolderReopenSession $state
+    Stop-Process -Id $guardedWindow.Id -Force
+    [void]$guardedWindow.WaitForExit(5000)
 
     $owned = Start-Process -FilePath $gui -ArgumentList 'owned' -PassThru
     $children.Add($owned)

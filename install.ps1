@@ -919,6 +919,7 @@ namespace SolderInstaller {
     [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)] private static extern IntPtr SendMessageTimeoutW(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam, uint flags, uint timeout, out IntPtr result);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern IntPtr GetPropW(IntPtr hwnd, string name);
     [DllImport("kernel32.dll", SetLastError=true)] private static extern bool GetNamedPipeServerProcessId(IntPtr pipe, out uint processId);
+    [DllImport("kernel32.dll", SetLastError=true)] private static extern bool PeekNamedPipe(IntPtr pipe, IntPtr buffer, uint size, IntPtr read, out uint available, IntPtr remaining);
     [DllImport("kernel32.dll")] public static extern uint GetErrorMode();
     [DllImport("kernel32.dll")] public static extern uint SetErrorMode(uint mode);
     public static long[] TopLevelWindows(uint pid) {
@@ -957,6 +958,10 @@ namespace SolderInstaller {
       uint pid;
       if (!GetNamedPipeServerProcessId(handle, out pid)) throw new System.ComponentModel.Win32Exception();
       return pid;
+    }
+    public static bool PipeReady(IntPtr handle) {
+      uint available;
+      return PeekNamedPipe(handle, IntPtr.Zero, 0, IntPtr.Zero, out available, IntPtr.Zero) && available == 0;
     }
   }
 }
@@ -1275,7 +1280,7 @@ function Open-SolderAfterUpdate {
 }
 
 function Close-SolderForUpdate {
-    param([string]$InstallRoot, [object]$State, [int]$CallerPid, [long]$CallerWindow)
+    param([string]$InstallRoot, [object]$State, [int]$CallerPid, [long]$CallerWindow, [object]$Held)
     Initialize-SolderWindowApi
     $processes = @(Get-SolderGuiProcesses $InstallRoot)
     $State.Session.Processes = $processes
@@ -1330,6 +1335,7 @@ function Close-SolderForUpdate {
         if ($matches.Count -ne 1 -or -not (Test-SolderProcessInstance $matches[0])) {
             Fail "A SolderCAD window changed while preparing the update. Retry."
         }
+        Assert-SolderPreparedHosts -Held $Held -State $State
         Set-CoordinatorProgress $State 'closing' 'Save your work if SolderCAD asks. Select Cancel there to stop the update.'
         # Synchronous WM_CLOSE runs on the worker, not the progress UI. Native
         # save dialogs remain responsive; a veto leaves the window alive.
@@ -1494,7 +1500,7 @@ function Open-SolderPreparedHosts {
                 }
                 $process = [Diagnostics.Process]::GetProcessById($captured.Id)
                 [void]$process.Handle
-                $held.Add([pscustomobject]@{ Pipe=$pipe; Process=$process; Captured=$captured })
+                $held.Add([pscustomobject]@{ Pipe=$pipe; Process=$process; Captured=$captured; Drained=$false })
             } catch { $pipe.Dispose(); throw }
         }
         return ,$held
@@ -1504,10 +1510,31 @@ function Open-SolderPreparedHosts {
     }
 }
 
+function Assert-SolderPreparedHosts {
+    param([object]$Held, [object]$State)
+    foreach ($hostSession in $Held) {
+        Assert-CoordinatorNotCancelled $State
+        if ($hostSession.Drained) { continue }
+        if ([SolderInstaller.Windows]::PipeReady($hostSession.Pipe.SafePipeHandle.DangerousGetHandle())) { continue }
+        # A prepared host may disconnect because an earlier editor has closed.
+        # Before any close that is never safe to assume; after a close, only
+        # accept it once the exact captured host has fully drained and exited.
+        if (-not $State.ClosedAny) { Fail 'Solder Chat changed while preparing the update. Your windows remain open; retry when it is ready.' }
+        $wait = [Diagnostics.Stopwatch]::StartNew()
+        while (-not $hostSession.Process.WaitForExit(100) -and $wait.ElapsedMilliseconds -lt 75000) {
+            Assert-CoordinatorNotCancelled $State
+            [void](Test-SolderProcessInstance $hostSession.Captured)
+        }
+        if (-not $hostSession.Process.HasExited) { Fail 'A SolderCAD chat session is still finishing. Retry when it has closed.' }
+        $hostSession.Drained = $true
+    }
+}
+
 function Close-SolderPreparedHosts {
     param([object]$Held, [object]$State)
     foreach ($hostSession in $Held) {
         Assert-CoordinatorNotCancelled $State
+        if ($hostSession.Drained) { continue }
         if ($hostSession.Process.HasExited) { continue }
         if (-not (Test-SolderProcessInstance $hostSession.Captured)) { continue }
         $request = [Text.Encoding]::ASCII.GetBytes("shutdown`n")
@@ -2229,7 +2256,7 @@ try {
             New-SolderReopenSession -InstallRoot $InstallDir -State $CoordinatorState -RequireNative $RequireReopenRecords
             $heldHosts = Open-SolderPreparedHosts -InstallRoot $InstallDir -State $CoordinatorState
             try {
-                Close-SolderForUpdate -InstallRoot $InstallDir -State $CoordinatorState -CallerPid $CallerProcessId -CallerWindow $CallerWindowHandle
+                Close-SolderForUpdate -InstallRoot $InstallDir -State $CoordinatorState -CallerPid $CallerProcessId -CallerWindow $CallerWindowHandle -Held $heldHosts
                 Close-SolderPreparedHosts -Held $heldHosts -State $CoordinatorState
             } finally { foreach ($held in $heldHosts) { $held.Pipe.Dispose(); $held.Process.Dispose() } }
             Assert-CoordinatorNotCancelled $CoordinatorState
