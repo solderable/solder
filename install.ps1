@@ -994,6 +994,8 @@ namespace SolderInstaller {
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
     [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)] private static extern IntPtr SendMessageTimeoutW(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam, uint flags, uint timeout, out IntPtr result);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] private static extern IntPtr GetPropW(IntPtr hwnd, string name);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)] private static extern uint RegisterWindowMessageW(string name);
+    [DllImport("user32.dll", SetLastError=true)] private static extern bool PostMessageW(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
     [DllImport("kernel32.dll", SetLastError=true)] private static extern bool GetNamedPipeServerProcessId(IntPtr pipe, out uint processId);
     [DllImport("kernel32.dll", SetLastError=true)] private static extern bool PeekNamedPipe(IntPtr pipe, IntPtr buffer, uint size, IntPtr read, out uint available, IntPtr remaining);
     [DllImport("kernel32.dll")] public static extern uint GetErrorMode();
@@ -1022,7 +1024,12 @@ namespace SolderInstaller {
     }
     public static bool Exists(long handle) { return IsWindow(new IntPtr(handle)); }
     public static bool SupportsSafeClose(long handle) {
-      return GetPropW(new IntPtr(handle), "SolderCAD.UpdateCloseProtocol.v1") == new IntPtr(1);
+      return GetPropW(new IntPtr(handle), "SolderCAD.UpdateCloseProtocol.v2") == new IntPtr(1);
+    }
+    public static void WakeManager(long handle) {
+      uint message = RegisterWindowMessageW("SolderCAD.UpdateReopen.v1");
+      if (message == 0 || !PostMessageW(new IntPtr(handle), message, IntPtr.Zero, IntPtr.Zero))
+        throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
     }
     // A responsive native save dialog may take as long as the user needs.
     // Abort if the window stops responding; never force-close the process.
@@ -1062,7 +1069,16 @@ function Get-SolderGuiProcesses {
         }
         $path = Resolve-PhysicalPath $process.ExecutablePath
         if ($path.StartsWith($app, [StringComparison]::OrdinalIgnoreCase)) {
-            $result.Add([pscustomobject]@{ Id = [int]$process.ProcessId; Path = $path; CommandLine = $process.CommandLine; Created = $process.CreationDate })
+            $instance = $null
+            try {
+                $instance = [Diagnostics.Process]::GetProcessById([int]$process.ProcessId)
+                $started = $instance.StartTime.ToUniversalTime().ToFileTimeUtc().ToString()
+                $captured = [pscustomobject]@{ Id = [int]$process.ProcessId; Path = $path; CommandLine = $process.CommandLine;
+                                               Created = $process.CreationDate; StartFileTime = $started }
+                if (Test-SolderProcessInstance $captured) { $result.Add($captured) }
+            } catch {
+                if (Test-SolderProcessAlive ([int]$process.ProcessId)) { throw }
+            } finally { if ($null -ne $instance) { $instance.Dispose() } }
         }
     }
     return $result.ToArray()
@@ -1119,7 +1135,37 @@ function New-SolderReopenSession {
     catch { [IO.Directory]::Delete($directory); throw }
     $State.Session = [pscustomobject]@{ Nonce=$nonce; InstallRoot=$InstallRoot; Directory=$directory; Request=$request;
         RequestIdentity=(Get-TargetIdentity $request $false); RequireNative=$RequireNative; Processes=@(); CliProcesses=(New-Object 'System.Collections.Generic.List[object]'); Windows=(New-Object 'System.Collections.Generic.List[object]');
-        Opened=(New-Object 'System.Collections.Generic.HashSet[string]'); RecordIdentities=@{} }
+        Opened=(New-Object 'System.Collections.Generic.HashSet[string]'); RecordIdentities=@{}; RecordHashes=@{}; Managers=@{};
+        MailboxIdentities=@{}; Mailboxes=@{}; ReopenAttempts=@{} }
+}
+
+function Assert-SolderRecordedDocument {
+    param([string]$Project, [string]$Extension, [bool]$Existed, [bool]$ManagerOwned)
+    if (-not $Project) {
+        if ($Existed -or $ManagerOwned) { Fail 'A saved SolderCAD document could not be verified. Recovery files were preserved.' }
+        return
+    }
+    if (-not [IO.Path]::IsPathRooted($Project) -or [IO.Path]::GetExtension($Project).ToLowerInvariant() -cne $Extension) {
+        Fail 'A saved SolderCAD document does not match its window. Recovery files were preserved.'
+    }
+    if ($Existed -or -not $ManagerOwned) {
+        if (-not $Existed -or -not (Test-Path -LiteralPath $Project -PathType Leaf)) {
+            Fail 'A saved SolderCAD document is unavailable. Recovery files were preserved.'
+        }
+        return
+    }
+    # A named, never-saved manager child can be recreated only if its parent
+    # is ordinary and no file, directory, or dangling link has appeared.
+    $path = [IO.Path]::GetFullPath($Project)
+    $parent = [IO.Path]::GetDirectoryName($path)
+    if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+        Fail 'A new SolderCAD document parent is unavailable. Recovery files were preserved.'
+    }
+    Assert-OrdinaryTarget $parent $true
+    $name = [IO.Path]::GetFileName($path)
+    if (@([IO.Directory]::EnumerateFileSystemEntries($parent) | Where-Object {
+        [IO.Path]::GetFileName($_).Equals($name, [StringComparison]::OrdinalIgnoreCase)
+    }).Count) { Fail 'A new SolderCAD document path changed. Recovery files were preserved.' }
 }
 
 function Get-SolderReopenEntry {
@@ -1129,29 +1175,69 @@ function Get-SolderReopenEntry {
         Assert-OrdinaryTarget $recordPath $false
         $file = Get-Item -LiteralPath $recordPath -Force
         if ($file.Length -gt 16384) { Fail 'An update reopen record is too large. Recovery files were preserved.' }
+        $identity = Get-TargetIdentity $recordPath $false
+        $hash = Get-FileSha256 $recordPath
         # Native reopen records are UTF-8; Windows PowerShell 5.1's default
         # Get-Content encoding is the active ANSI code page, not UTF-8.
         $record = [IO.File]::ReadAllText($recordPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+        if ((Get-TargetIdentity $recordPath $false) -cne $identity -or (Get-FileSha256 $recordPath) -cne $hash) {
+            Fail 'An update reopen record changed. Recovery files were preserved.'
+        }
+        if ($Session.RecordIdentities.ContainsKey($recordPath) -and
+            ($Session.RecordIdentities[$recordPath] -cne $identity -or $Session.RecordHashes[$recordPath] -cne $hash)) {
+            Fail 'An update reopen record changed. Recovery files were preserved.'
+        }
         if ($record.schemaVersion -ne 1 -or $record.nonce -cne $Session.Nonce -or
             $record.pid -ne $Window.Process.Id -or [string]$record.hwnd -cne [string]$Window.Handle -or
             $record.executable -isnot [string] -or $record.project -isnot [string] -or $record.frameType -cnotin @('manager', 'schematic', 'pcb') -or
+            $record.managerHwnd -isnot [string] -or $record.managerHwnd -cnotmatch '\A[0-9]+\z' -or
+            $record.managerStartTime -isnot [string] -or $record.managerStartTime -cnotmatch '\A[0-9]+\z' -or
+            $record.managerProject -isnot [string] -or $record.documentExisted -isnot [bool] -or
             -not ([IO.Path]::GetFullPath($record.executable)).Equals($Window.Process.Path, [StringComparison]::OrdinalIgnoreCase)) {
             Fail 'An update reopen record could not be verified. Recovery files were preserved.'
+        }
+        $managerHandle = [long]0
+        if (-not [long]::TryParse($record.managerHwnd, [ref]$managerHandle) -or $managerHandle -lt 0) {
+            Fail 'A SolderCAD manager identity could not be verified. Recovery files were preserved.'
+        }
+        if ($managerHandle -eq 0) {
+            if ($record.frameType -ceq 'manager' -or $record.managerStartTime -cne '0' -or $record.managerProject) {
+                Fail 'A SolderCAD manager identity could not be verified. Recovery files were preserved.'
+            }
+        } else {
+            if ($record.managerStartTime -ceq '0' -or $record.managerStartTime -cne $Window.Process.StartFileTime) {
+                Fail 'A SolderCAD manager identity could not be verified. Recovery files were preserved.'
+            }
+            if ($record.frameType -ceq 'manager') {
+                if ($managerHandle -ne $Window.Handle -or $record.managerProject -cne $record.project) {
+                    Fail 'A SolderCAD manager record could not be verified. Recovery files were preserved.'
+                }
+            } elseif ($managerHandle -eq $Window.Handle -or -not $record.managerProject -or
+                      -not [IO.Path]::IsPathRooted($record.managerProject) -or
+                      [IO.Path]::GetExtension($record.managerProject).ToLowerInvariant() -cne '.kicad_pro' -or
+                      -not (Test-Path -LiteralPath $record.managerProject -PathType Leaf) -or -not $record.project) {
+                Fail 'A manager-owned editor record could not be verified. Recovery files were preserved.'
+            }
         }
         $target = switch -CaseSensitive ($record.frameType) {
             'manager' { @{ Exe='kicad.exe'; Extension='.kicad_pro' } }
             'schematic' { @{ Exe='eeschema.exe'; Extension='.kicad_sch' } }
             'pcb' { @{ Exe='pcbnew.exe'; Extension='.kicad_pcb' } }
         }
-        if ($record.project) {
-            if ([IO.Path]::GetExtension($record.project).ToLowerInvariant() -cne $target.Extension -or
-                -not [IO.Path]::IsPathRooted($record.project) -or -not (Test-Path -LiteralPath $record.project -PathType Leaf)) {
-                Fail 'A saved SolderCAD document is unavailable or does not match its window. Recovery files were preserved.'
-            }
+        $managerOwned = $managerHandle -ne 0 -and $record.frameType -cne 'manager'
+        # Once a request has been sent, the user may already be editing or
+        # saving the restored document even if its acknowledgement was lost.
+        # The manager validates the original state and idempotent replay.
+        if (-not $Session.Opened.Contains($recordPath) -and -not $Session.ReopenAttempts.ContainsKey($recordPath)) {
+            Assert-SolderRecordedDocument -Project $record.project -Extension $target.Extension -Existed $record.documentExisted -ManagerOwned $managerOwned
         }
-        $Session.RecordIdentities[$recordPath] = Get-TargetIdentity $recordPath $false
-        return [pscustomobject]@{ Key=$recordPath; Executable=(Join-Path $Session.InstallRoot ('SolderCAD\bin\' + $target.Exe)); Project=$record.project }
+        $Session.RecordIdentities[$recordPath] = $identity
+        $Session.RecordHashes[$recordPath] = $hash
+        return [pscustomobject]@{ Key=$recordPath; Executable=(Join-Path $Session.InstallRoot ('SolderCAD\bin\' + $target.Exe)); Project=$record.project;
+                                 FrameType=$record.frameType; ManagerHwnd=$managerHandle; ManagerStartTime=$record.managerStartTime;
+                                 ManagerProject=$record.managerProject; DocumentExisted=$record.documentExisted }
     }
+    if ($Session.RecordIdentities.ContainsKey($recordPath)) { Fail 'An update reopen record disappeared. Recovery files were preserved.' }
     if ($Required) { Fail 'A closed SolderCAD window did not provide its saved document. Recovery files were preserved.' }
     $project = ''
     if ($Window.Process.Id -eq $CallerPid -and $CallerProject) { $project = $CallerProject }
@@ -1161,7 +1247,17 @@ function Get-SolderReopenEntry {
                 (Test-Path -LiteralPath $arg -PathType Leaf)) { $project = $arg; break }
         }
     }
-    return [pscustomobject]@{ Key=('legacy-' + $Window.Process.Id); Executable=$Window.Process.Path; Project=$project }
+    return [pscustomobject]@{ Key=('legacy-' + $Window.Process.Id); Executable=$Window.Process.Path; Project=$project;
+                             FrameType='legacy'; ManagerHwnd=[long]0; ManagerStartTime='0'; ManagerProject=''; DocumentExisted=[bool]$project }
+}
+
+function Test-SolderManagerRecordMatches {
+    param([object]$Manager, [object]$Child)
+    $sameProject = if (-not $Manager.ManagerProject -and -not $Child.ManagerProject) { $true }
+                   elseif (-not $Manager.ManagerProject -or -not $Child.ManagerProject) { $false }
+                   else { ([IO.Path]::GetFullPath($Manager.ManagerProject)).Equals([IO.Path]::GetFullPath($Child.ManagerProject), [StringComparison]::OrdinalIgnoreCase) }
+    return $Manager.FrameType -ceq 'manager' -and $Manager.ManagerHwnd -eq $Child.ManagerHwnd -and
+           $Manager.ManagerStartTime -ceq $Child.ManagerStartTime -and $sameProject
 }
 
 function Assert-SolderClosedWindowRecords {
@@ -1181,14 +1277,241 @@ function Assert-SolderClosedWindowRecords {
         $processId = [int]$Matches[1]; $handle = [long]$Matches[2]
         $process = @($State.Session.Processes | Where-Object { $_.Id -eq $processId })
         if ($process.Count -ne 1 -or $handle -le 0) { Fail 'An update reopen record names an unknown window. Recovery files were preserved.' }
-        [void](Get-SolderReopenEntry $State.Session ([pscustomobject]@{Handle=$handle; Process=$process[0]}) $CallerProject $CallerPid $true)
+        $entry = Get-SolderReopenEntry $State.Session ([pscustomobject]@{Handle=$handle; Process=$process[0]}) $CallerProject $CallerPid $true
+        if ($entry.ManagerHwnd -ne 0 -and $entry.FrameType -cne 'manager') {
+            $managers = @($State.Session.Windows | Where-Object { $_.Process.Id -eq $processId -and $_.Handle -eq $entry.ManagerHwnd })
+            if ($managers.Count -ne 1) { Fail 'An editor names an unknown SolderCAD manager. Recovery records were preserved.' }
+            $manager = Get-SolderReopenEntry $State.Session $managers[0] $CallerProject $CallerPid $true
+            if (-not (Test-SolderManagerRecordMatches $manager $entry)) {
+                Fail 'A SolderCAD manager record does not match its editors. Recovery records were preserved.'
+            }
+        }
     }
+}
+
+function Mark-SolderReopenEntry {
+    param([object]$State, [object]$Window, [object]$Entry, [int]$CallerPid)
+    [void]$State.Session.Opened.Add($Entry.Key)
+    $callerWindow = $State.Session.PSObject.Properties['CallerWindow']
+    $recordPath = Join-Path $State.Session.Directory ("$($Window.Process.Id)-$($Window.Handle).json")
+    if ($CallerPid -gt 0 -and $null -ne $callerWindow -and $Window.Process.Id -eq $CallerPid -and
+        $Window.Handle -eq $callerWindow.Value -and $Entry.Key -ceq $recordPath) {
+        # Persist across Retry: the restored caller gets a new PID, and a
+        # Save As record can differ from the original launch argument.
+        $State.CallerReopened = $true
+    }
+}
+
+function Test-SolderManagerTarget {
+    param([object]$Target)
+    return (Test-SolderProcessInstance $Target.Captured) -and
+           [SolderInstaller.Windows]::Exists($Target.Handle) -and
+           [SolderInstaller.Windows]::Owner($Target.Handle) -eq $Target.Captured.Id -and
+           [SolderInstaller.Windows]::SupportsSafeClose($Target.Handle)
+}
+
+function Remove-SolderExitedManagers {
+    param([object]$State, [int]$CallerPid)
+    $session = $State.Session
+    foreach ($key in @($session.Managers.Keys)) {
+        $target = $session.Managers[$key]
+        $target.Process.Refresh()
+        if (-not $target.Process.HasExited) { continue }
+        foreach ($recordKey in $target.Keys) {
+            [void]$session.Opened.Remove($recordKey)
+            $callerWindow = $session.PSObject.Properties['CallerWindow']
+            if ($CallerPid -gt 0 -and $null -ne $callerWindow -and
+                $recordKey -ceq (Join-Path $session.Directory ("$CallerPid-$($callerWindow.Value).json"))) {
+                $State.CallerReopened = $false
+            }
+        }
+        $target.Process.Dispose()
+        [void]$session.Managers.Remove($key)
+    }
+}
+
+function Wait-SolderManagerTarget {
+    param([string]$InstallRoot, [object]$State, [string]$Key, [object]$ManagerWindow,
+          [object]$ManagerEntry, [int]$CallerPid, [int]$TimeoutMs = 30000)
+    $session = $State.Session
+    $target = $session.Managers[$Key]
+    $process = $target.Process
+    $deadline = [Diagnostics.Stopwatch]::StartNew()
+    while ($deadline.ElapsedMilliseconds -lt $TimeoutMs) {
+        Assert-SolderReopenSession $State
+        if ((Get-TargetIdentity $ManagerEntry.Key $false) -cne $session.RecordIdentities[$ManagerEntry.Key] -or
+            (Get-FileSha256 $ManagerEntry.Key) -cne $session.RecordHashes[$ManagerEntry.Key]) {
+            Fail 'A SolderCAD manager record changed. Recovery records were preserved.'
+        }
+        $process.Refresh()
+        if ($process.HasExited) {
+            Remove-SolderExitedManagers $State $CallerPid
+            Fail 'A restored SolderCAD manager exited before it was ready. Recovery records were preserved.'
+        }
+        $handle = [long]$process.MainWindowHandle
+        if ($handle -gt 0 -and [SolderInstaller.Windows]::Owner($handle) -eq $process.Id -and
+            [SolderInstaller.Windows]::SupportsSafeClose($handle)) {
+            $captured = @(Get-SolderGuiProcesses $InstallRoot | Where-Object { $_.Id -eq $process.Id })
+            if ($captured.Count -eq 1) {
+                $target.Captured = $captured[0]
+                $target.Handle = $handle
+                if (Test-SolderManagerTarget $target) { return $target }
+            }
+        }
+        Start-Sleep -Milliseconds 200
+    }
+    # Keep the exact still-live process across Retry; starting a second manager
+    # would compete for the same project while this one is still starting.
+    Fail 'A restored SolderCAD manager did not become ready. Recovery records were preserved.'
+}
+
+function Get-SolderManagerTarget {
+    param([string]$InstallRoot, [object]$State, [object]$Window, [object]$Entry, [int]$CallerPid)
+    $session = $State.Session
+    $key = "$($Window.Process.Id)-$($Entry.ManagerHwnd)-$($Entry.ManagerStartTime)"
+    if ($session.Managers.ContainsKey($key)) {
+        $target = $session.Managers[$key]
+        $sameProject = if (-not $target.ManagerProject -and -not $Entry.ManagerProject) { $true }
+                       elseif (-not $target.ManagerProject -or -not $Entry.ManagerProject) { $false }
+                       else { ([IO.Path]::GetFullPath($target.ManagerProject)).Equals([IO.Path]::GetFullPath($Entry.ManagerProject), [StringComparison]::OrdinalIgnoreCase) }
+        if (-not $sameProject) { Fail 'A SolderCAD manager record does not match its editors. Recovery records were preserved.' }
+        $target.Process.Refresh()
+        if ($target.Process.HasExited) {
+            Remove-SolderExitedManagers $State $CallerPid
+            Fail 'A restored SolderCAD manager exited. Choose Retry to restore its windows.'
+        }
+        if ($null -eq $target.Captured) {
+            $managerWindows = @($session.Windows | Where-Object { $_.Process.Id -eq $Window.Process.Id -and $_.Handle -eq $Entry.ManagerHwnd })
+            if ($managerWindows.Count -ne 1) { Fail 'An editor names an unknown SolderCAD manager. Recovery records were preserved.' }
+            $managerEntry = Get-SolderReopenEntry $session $managerWindows[0] '' $CallerPid $true
+            if (-not (Test-SolderManagerRecordMatches $managerEntry $Entry)) {
+                Fail 'A SolderCAD manager record does not match its editors. Recovery records were preserved.'
+            }
+            return Wait-SolderManagerTarget $InstallRoot $State $key $managerWindows[0] $managerEntry $CallerPid
+        }
+        if (-not (Test-SolderManagerTarget $target)) { Fail 'A restored SolderCAD manager is no longer available. Recovery records were preserved.' }
+        return $target
+    }
+    $managerWindows = @($session.Windows | Where-Object {
+        $_.Process.Id -eq $Window.Process.Id -and $_.Handle -eq $Entry.ManagerHwnd
+    })
+    if ($managerWindows.Count -ne 1) { Fail 'An editor names an unknown SolderCAD manager. Recovery records were preserved.' }
+    $managerWindow = $managerWindows[0]
+    if ([SolderInstaller.Windows]::Exists($Entry.ManagerHwnd) -and
+        [SolderInstaller.Windows]::Owner($Entry.ManagerHwnd) -eq $Window.Process.Id) {
+        $process = Get-Process -Id $Window.Process.Id -ErrorAction Stop
+        [void]$process.Handle
+        $target = [pscustomobject]@{ Captured=$managerWindow.Process; Handle=$Entry.ManagerHwnd; Process=$process;
+            ManagerProject=$Entry.ManagerProject; Keys=(New-Object 'System.Collections.Generic.HashSet[string]') }
+        if (-not (Test-SolderManagerTarget $target) -or $target.Captured.StartFileTime -cne $Entry.ManagerStartTime) {
+            $process.Dispose()
+            Fail 'A SolderCAD manager changed while restoring its editors. Recovery records were preserved.'
+        }
+        $session.Managers[$key] = $target
+        return $target
+    }
+    $managerEntry = Get-SolderReopenEntry $session $managerWindow '' $CallerPid $true
+    if (-not (Test-SolderManagerRecordMatches $managerEntry $Entry)) {
+        Fail 'A SolderCAD manager record does not match its editors. Recovery records were preserved.'
+    }
+    $hint = "$($session.Nonce):$($Window.Process.Id):$($Entry.ManagerHwnd)"
+    $process = Open-SolderAfterUpdate -InstallRoot $InstallRoot -Executable $managerEntry.Executable -Project $managerEntry.Project -ManagerHint $hint -PassThru
+    $session.Managers[$key] = [pscustomobject]@{ Captured=$null; Handle=[long]0; Process=$process;
+        ManagerProject=$managerEntry.ManagerProject; Keys=(New-Object 'System.Collections.Generic.HashSet[string]') }
+    return Wait-SolderManagerTarget $InstallRoot $State $key $managerWindow $managerEntry $CallerPid
+}
+
+function Invoke-SolderManagerReopen {
+    param([object]$State, [object]$Window, [object]$Entry, [object]$Target, [int]$TimeoutMs = 30000)
+    $session = $State.Session
+    Assert-SolderReopenSession $State
+    if (-not (Test-SolderManagerTarget $Target) -or
+        (Get-TargetIdentity $Entry.Key $false) -cne $session.RecordIdentities[$Entry.Key] -or
+        (Get-FileSha256 $Entry.Key) -cne $session.RecordHashes[$Entry.Key]) {
+        Fail 'A SolderCAD manager or editor record changed. Recovery records were preserved.'
+    }
+    $mailbox = $session.Mailboxes[$Entry.Key]
+    if ($null -eq $mailbox -or $mailbox.TargetPid -ne $Target.Captured.Id -or
+        $mailbox.TargetHwnd -ne $Target.Handle -or $mailbox.TargetStartTime -cne $Target.Captured.StartFileTime) {
+        $requestId = [Guid]::NewGuid().ToString('N')
+        $base = Join-Path $session.Directory ('reopen-' + $requestId)
+        $temporary = $base + '.tmp'
+        $request = $base + '.request'
+        $ack = $base + '.ack'
+        $record = [ordered]@{ schemaVersion=1; nonce=$session.Nonce; requestId=$requestId;
+            sourcePid=$Window.Process.Id; sourceHwnd=[string]$Window.Handle;
+            targetPid=$Target.Captured.Id; targetHwnd=[string]$Target.Handle;
+            targetStartTime=$Target.Captured.StartFileTime } | ConvertTo-Json -Compress
+        Write-TransactionRecord $temporary $record
+        [IO.File]::Move($temporary, $request)
+        $requestIdentity = Get-TargetIdentity $request $false
+        $mailbox = [pscustomobject]@{ Id=$requestId; Request=$request; Ack=$ack; Identity=$requestIdentity;
+            Hash=(Get-FileSha256 $request); TargetPid=$Target.Captured.Id; TargetHwnd=$Target.Handle; TargetStartTime=$Target.Captured.StartFileTime }
+        $session.Mailboxes[$Entry.Key] = $mailbox
+        $session.MailboxIdentities[$request] = $requestIdentity
+    }
+    $requestId=$mailbox.Id; $request=$mailbox.Request; $ack=$mailbox.Ack; $requestIdentity=$mailbox.Identity
+    $session.ReopenAttempts[$Entry.Key] = $true
+    $deadline = [Diagnostics.Stopwatch]::StartNew()
+    while ($deadline.ElapsedMilliseconds -lt $TimeoutMs) {
+        Assert-SolderReopenSession $State
+        if (-not (Test-SolderManagerTarget $Target) -or (Get-TargetIdentity $request $false) -cne $requestIdentity -or
+            (Get-FileSha256 $request) -cne $mailbox.Hash -or
+            (Get-TargetIdentity $Entry.Key $false) -cne $session.RecordIdentities[$Entry.Key] -or
+            (Get-FileSha256 $Entry.Key) -cne $session.RecordHashes[$Entry.Key]) {
+            Fail 'A SolderCAD manager or editor record changed. Recovery records were preserved.'
+        }
+        if (Test-Path -LiteralPath $ack -PathType Leaf) {
+            Assert-OrdinaryTarget $ack $false
+            $file = Get-Item -LiteralPath $ack -Force
+            if ($file.Length -le 0 -or $file.Length -gt 4096) { Fail 'A SolderCAD manager response could not be verified. Recovery records were preserved.' }
+            $ackIdentity = Get-TargetIdentity $ack $false
+            $ackHash = Get-FileSha256 $ack
+            $response = [IO.File]::ReadAllText($ack, [Text.Encoding]::UTF8) | ConvertFrom-Json
+            if ((Get-TargetIdentity $ack $false) -cne $ackIdentity -or (Get-FileSha256 $ack) -cne $ackHash) {
+                Fail 'A SolderCAD manager response changed. Recovery records were preserved.'
+            }
+            if ($response.schemaVersion -ne 1 -or $response.nonce -cne $session.Nonce -or
+                $response.requestId -cne $requestId -or $response.status -cnotin @('opened', 'already_open', 'conflict', 'error')) {
+                Fail 'A SolderCAD manager response could not be verified. Recovery records were preserved.'
+            }
+            $session.MailboxIdentities[$ack] = $ackIdentity
+            if ($response.status -cnotin @('opened', 'already_open')) {
+                # A negative response is final for this request. Retire its
+                # verified request first so Retry can issue a fresh request
+                # after the user resolves the conflict; an old ACK alone is
+                # never interpreted as a new request by the manager.
+                if ((Get-TargetIdentity $request $false) -cne $requestIdentity -or (Get-FileSha256 $request) -cne $mailbox.Hash -or
+                    (Get-TargetIdentity $ack $false) -cne $ackIdentity -or (Get-FileSha256 $ack) -cne $ackHash) {
+                    Fail 'A SolderCAD manager response changed. Recovery records were preserved.'
+                }
+                [IO.File]::Delete($request)
+                [void]$session.Mailboxes.Remove($Entry.Key)
+                [void]$session.MailboxIdentities.Remove($request)
+                try { [IO.File]::Delete($ack); [void]$session.MailboxIdentities.Remove($ack) }
+                catch { Write-Warning 'A previous update response could not be cleaned and was preserved.' }
+                Fail 'A SolderCAD editor could not reopen in its project manager. Recovery records were preserved.'
+            }
+            if (-not (Test-SolderManagerTarget $Target) -or
+                (Get-TargetIdentity $Entry.Key $false) -cne $session.RecordIdentities[$Entry.Key] -or
+                (Get-FileSha256 $Entry.Key) -cne $session.RecordHashes[$Entry.Key] -or
+                (Get-TargetIdentity $request $false) -cne $requestIdentity -or (Get-FileSha256 $request) -cne $mailbox.Hash -or
+                (Get-TargetIdentity $ack $false) -cne $ackIdentity -or (Get-FileSha256 $ack) -cne $ackHash) {
+                Fail 'A restored SolderCAD manager or editor record changed. Recovery records were preserved.'
+            }
+            return
+        }
+        [SolderInstaller.Windows]::WakeManager($Target.Handle)
+        Start-Sleep -Milliseconds 200
+    }
+    Fail 'A SolderCAD manager did not confirm its editor reopened. Recovery records were preserved.'
 }
 
 function Open-SolderReopenSession {
     param([string]$InstallRoot, [object]$State, [string]$CallerProject, [int]$CallerPid, [bool]$Required)
     if ($null -eq $State.Session) { return }
     Assert-OrdinaryTarget $State.Session.Directory $true
+    Remove-SolderExitedManagers $State $CallerPid
     foreach ($file in @(Get-ChildItem -LiteralPath $State.Session.Directory -File -Force -Filter '*.json')) {
         if ($file.Name -cmatch '\Acli-[0-9]+\.json\z') { continue }
         if ($file.Name -cnotmatch '\A([0-9]+)-([0-9]+)\.json\z') { Fail 'An unrecognized update reopen record was preserved.' }
@@ -1200,24 +1523,41 @@ function Open-SolderReopenSession {
             $State.Session.Windows.Add([pscustomobject]@{ Handle=$handle; Process=$process[0]; ExpectedRecord=$true })
         }
     }
+    $pending = New-Object 'System.Collections.Generic.List[object]'
     foreach ($window in $State.Session.Windows) {
         if ([SolderInstaller.Windows]::Exists($window.Handle) -and [SolderInstaller.Windows]::Owner($window.Handle) -eq $window.Process.Id) { continue }
-        # Native EDA frames guarantee records themselves; auxiliary top-level
-        # windows may not be EDA frames. Require only the initiating frame.
-        $mustHaveRecord = $Required -and $window.ExpectedRecord
+        # Every frame accepted by the v2 preflight must checkpoint its close,
+        # including frames closed before a later window vetoed the update.
+        $mustHaveRecord = $window.ExpectedRecord
         $recordPath = Join-Path $State.Session.Directory ("$($window.Process.Id)-$($window.Handle).json")
         if ($State.Session.RequireNative -and -not $mustHaveRecord -and -not (Test-Path -LiteralPath $recordPath -PathType Leaf) -and
             $window.Handle -ne $State.Session.CallerWindow) { continue }
         $entry = Get-SolderReopenEntry $State.Session $window $CallerProject $CallerPid $mustHaveRecord
         if ($State.Session.Opened.Contains($entry.Key)) { continue }
-        Open-SolderAfterUpdate -InstallRoot $InstallRoot -Executable $entry.Executable -Project $entry.Project
-        [void]$State.Session.Opened.Add($entry.Key)
-        $callerWindow = $State.Session.PSObject.Properties['CallerWindow']
-        if ($CallerPid -gt 0 -and $null -ne $callerWindow -and $window.Process.Id -eq $CallerPid -and
-            $window.Handle -eq $callerWindow.Value -and $entry.Key -ceq $recordPath) {
-            # Persist across Retry: the restored caller gets a new PID, and a
-            # Save As record can differ from the original launch argument.
-            $State.CallerReopened = $true
+        $pending.Add([pscustomobject]@{ Window=$window; Entry=$entry })
+    }
+    # Open managers before their owned children. Reopening those children as
+    # standalone editors can take the project lock before the manager starts.
+    foreach ($item in $pending) {
+        if ($item.Entry.FrameType -ceq 'manager') {
+            $target = Get-SolderManagerTarget $InstallRoot $State $item.Window $item.Entry $CallerPid
+            Invoke-SolderManagerReopen $State $item.Window $item.Entry $target
+            Mark-SolderReopenEntry $State $item.Window $item.Entry $CallerPid
+            [void]$target.Keys.Add($item.Entry.Key)
+        }
+    }
+    foreach ($item in $pending) {
+        if ($item.Entry.ManagerHwnd -ne 0 -and $item.Entry.FrameType -cne 'manager') {
+            $target = Get-SolderManagerTarget $InstallRoot $State $item.Window $item.Entry $CallerPid
+            Invoke-SolderManagerReopen $State $item.Window $item.Entry $target
+            Mark-SolderReopenEntry $State $item.Window $item.Entry $CallerPid
+            [void]$target.Keys.Add($item.Entry.Key)
+        }
+    }
+    foreach ($item in $pending) {
+        if ($item.Entry.ManagerHwnd -eq 0) {
+            Open-SolderAfterUpdate -InstallRoot $InstallRoot -Executable $item.Entry.Executable -Project $item.Entry.Project
+            Mark-SolderReopenEntry $State $item.Window $item.Entry $CallerPid
         }
     }
     foreach ($file in @(Get-ChildItem -LiteralPath $State.Session.Directory -File -Force -Filter 'cli-*.json')) {
@@ -1277,14 +1617,21 @@ function Complete-SolderReopenSession {
     }
     foreach ($path in @($session.RecordIdentities.Keys)) {
         try {
-            if ($session.Opened.Contains($path) -and (Get-TargetIdentity $path $false) -ceq $session.RecordIdentities[$path]) {
+            if ($session.Opened.Contains($path) -and (Get-TargetIdentity $path $false) -ceq $session.RecordIdentities[$path] -and
+                (-not $session.RecordHashes.ContainsKey($path) -or (Get-FileSha256 $path) -ceq $session.RecordHashes[$path])) {
                 [IO.File]::Delete($path)
             }
         } catch { Write-Warning 'An update reopen record could not be cleaned and was preserved.' }
     }
+    foreach ($path in @($session.MailboxIdentities.Keys)) {
+        try {
+            if ((Get-TargetIdentity $path $false) -ceq $session.MailboxIdentities[$path]) { [IO.File]::Delete($path) }
+        } catch { Write-Warning 'An update reopen message could not be cleaned and was preserved.' }
+    }
     [IO.File]::Delete($session.Request)
     # Unknown files survive; never recursively clean an unrecognized record.
     try { [IO.Directory]::Delete($session.Directory, $false) } catch { }
+    foreach ($target in @($session.Managers.Values)) { if ($null -ne $target.Process) { $target.Process.Dispose() } }
 }
 
 function Quote-SolderArgument {
@@ -1310,13 +1657,16 @@ function Quote-SolderArgument {
 }
 
 function Start-SolderGuiProcess {
-    param([string]$Executable, [string]$WorkingDirectory, [string]$Project)
+    param([string]$Executable, [string]$WorkingDirectory, [string]$Project,
+          [bool]$NewEmptyManager = $false, [string]$ManagerHint)
     Initialize-SolderWindowApi
     $start = New-Object Diagnostics.ProcessStartInfo
     $start.FileName = $Executable
     $start.WorkingDirectory = $WorkingDirectory
     $start.UseShellExecute = $false
     if ($Project) { $start.Arguments = Quote-SolderArgument $Project }
+    elseif ($NewEmptyManager) { $start.Arguments = '-n' }
+    if ($ManagerHint) { $start.EnvironmentVariables['SOLDER_UPDATE_REOPEN_MANAGER'] = $ManagerHint }
     # A missing dependent DLL can display a Windows loader dialog indefinitely.
     # With CreateProcess and an inherited error mode, the child exits instead;
     # the launcher can then start the repair coordinator without hiding work.
@@ -1329,7 +1679,8 @@ function Start-SolderGuiProcess {
 }
 
 function Open-SolderAfterUpdate {
-    param([string]$InstallRoot, [string]$Executable, [string]$Project)
+    param([string]$InstallRoot, [string]$Executable, [string]$Project,
+          [string]$ManagerHint, [switch]$PassThru)
     if ([string]::IsNullOrWhiteSpace($Executable)) { return }
     $app = (Join-Path $InstallRoot 'SolderCAD').TrimEnd('\') + '\'
     $executablePath = [IO.Path]::GetFullPath($Executable)
@@ -1355,19 +1706,125 @@ function Open-SolderAfterUpdate {
             Fail "SolderCAD was installed, but the previous project could not be reopened."
         }
     }
-    $process = Start-SolderGuiProcess -Executable $executablePath -WorkingDirectory ([IO.Path]::GetDirectoryName($executablePath)) -Project $projectPath
-    if ($process.WaitForExit(2000)) {
+    $emptyManager = -not $projectPath -and [IO.Path]::GetFileName($executablePath).Equals('kicad.exe', [StringComparison]::OrdinalIgnoreCase)
+    $process = Start-SolderGuiProcess -Executable $executablePath -WorkingDirectory ([IO.Path]::GetDirectoryName($executablePath)) -Project $projectPath -NewEmptyManager $emptyManager -ManagerHint $ManagerHint
+    $returned = $false
+    try {
+        if ($process.WaitForExit(2000)) {
+            $process.Refresh()
+            if ($process.ExitCode -ne 0 -or $PassThru) { Fail "SolderCAD could not start after the update. Retry opening it." }
+        }
+        if ($PassThru) { $returned = $true; return $process }
+    } finally { if (-not $returned) { $process.Dispose() } }
+}
+
+function Assert-SolderStagedReopenCapability {
+    param([string]$StagedApp, [object]$State)
+    $valid = $false
+    try {
+        if ($StagedApp -and (Test-Path -LiteralPath $StagedApp -PathType Container)) {
+            $directory = $StagedApp
+            Assert-OrdinaryTarget $directory $true
+            foreach ($part in @('share', 'kicad', 'resources', 'solder_chat')) {
+                $directory = Join-Path $directory $part
+                Assert-OrdinaryTarget $directory $true
+                if (-not (Test-Path -LiteralPath $directory -PathType Container)) { throw 'missing capability directory' }
+            }
+            $marker = Join-Path $directory 'windows-update-capabilities.json'
+            Assert-OrdinaryTarget $marker $false
+            if (-not (Test-Path -LiteralPath $marker -PathType Leaf)) { throw 'missing capability marker' }
+            $file = Get-Item -LiteralPath $marker -Force
+            if ($file.Length -le 0 -or $file.Length -gt 4096) { throw 'invalid capability marker' }
+            $identity = Get-TargetIdentity $marker $false
+            $hash = Get-FileSha256 $marker
+            $capability = [IO.File]::ReadAllText($marker, [Text.Encoding]::UTF8) | ConvertFrom-Json
+            $valid = (Get-TargetIdentity $marker $false) -ceq $identity -and (Get-FileSha256 $marker) -ceq $hash -and
+                ($capability.schemaVersion -is [int] -or $capability.schemaVersion -is [long]) -and $capability.schemaVersion -eq 1 -and
+                $capability.component -is [string] -and $capability.component -ceq 'soldercad' -and
+                ($capability.windowsUpdateCloseProtocol -is [int] -or $capability.windowsUpdateCloseProtocol -is [long]) -and $capability.windowsUpdateCloseProtocol -eq 2 -and
+                ($capability.windowsManagerReopenProtocol -is [int] -or $capability.windowsManagerReopenProtocol -is [long]) -and $capability.windowsManagerReopenProtocol -eq 1
+        }
+    } catch { $valid = $false }
+    if (-not $valid) {
+        Set-CoordinatorProgress $State 'manual-close' 'Save and close all SolderCAD windows, then choose Retry.'
+        Fail 'This SolderCAD release cannot reopen your windows automatically. Save and close them, then choose Retry.'
+    }
+}
+
+function Test-SolderStagedCliCapabilities {
+    param([string]$Executable, [object]$State, [int]$TimeoutMs = 15000)
+    $probe = Join-Path ([IO.Path]::GetTempPath()) ('solder-capabilities-' + [Guid]::NewGuid().ToString('N'))
+    $stdout = Join-Path $probe 'stdout'; $stderr = Join-Path $probe 'stderr'
+    $process = $null
+    try {
+        Assert-CoordinatorNotCancelled $State
+        $identity = Get-TargetIdentity $Executable $false
+        $hash = Get-FileSha256 $Executable
+        [void][IO.Directory]::CreateDirectory($probe)
+        $deadline = [Diagnostics.Stopwatch]::StartNew()
+        $process = Start-Process -FilePath $Executable -ArgumentList '--windows-update-capabilities' -NoNewWindow -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+        [void]$process.Handle
+        while (-not $process.WaitForExit(100)) {
+            Assert-CoordinatorNotCancelled $State
+            if ($deadline.ElapsedMilliseconds -ge $TimeoutMs -or
+                ((Test-Path -LiteralPath $stdout) -and (Get-Item -LiteralPath $stdout).Length -gt 4096) -or
+                ((Test-Path -LiteralPath $stderr) -and (Get-Item -LiteralPath $stderr).Length -gt 4096)) { return $false }
+        }
         $process.Refresh()
-        if ($process.ExitCode -ne 0) { Fail "SolderCAD could not start after the update. Retry opening it." }
+        Assert-CoordinatorNotCancelled $State
+        if ($deadline.ElapsedMilliseconds -gt $TimeoutMs -or $process.ExitCode -ne 0 -or (Get-Item -LiteralPath $stdout).Length -gt 4096 -or
+            (Get-Item -LiteralPath $stderr).Length -gt 4096 -or (Get-TargetIdentity $Executable $false) -cne $identity -or
+            (Get-FileSha256 $Executable) -cne $hash) { return $false }
+        $data = [IO.File]::ReadAllText($stdout, [Text.Encoding]::UTF8) | ConvertFrom-Json
+        return ($data.schemaVersion -is [int] -or $data.schemaVersion -is [long]) -and $data.schemaVersion -eq 1 -and
+            $data.component -is [string] -and $data.component -ceq 'solder-cli' -and
+            ($data.terminalDraftRestore -is [int] -or $data.terminalDraftRestore -is [long]) -and $data.terminalDraftRestore -eq 1 -and
+            ($data.webDraftRestore -is [int] -or $data.webDraftRestore -is [long]) -and $data.webDraftRestore -eq 1
+    } catch [OperationCanceledException] { throw }
+    catch { return $false }
+    finally {
+        if ($null -ne $process) {
+            try { if (-not $process.HasExited) { $process.Kill(); [void]$process.WaitForExit(5000) } } catch { }
+            $process.Dispose()
+        }
+        foreach ($file in @($stdout, $stderr)) { try { [IO.File]::Delete($file) } catch { } }
+        try { [IO.Directory]::Delete($probe, $false) } catch { }
+    }
+}
+
+function Assert-SolderStagedCliForRunningSessions {
+    param([string]$InstallRoot, [object]$State, [bool]$Supported, [object[]]$GuiProcesses)
+    if ($Supported) { return }
+    $running = $null -ne $GuiProcesses -and $GuiProcesses.Count -gt 0
+    if (-not $running) {
+        $target = Join-Path $InstallRoot 'bin\solder.exe'
+        foreach ($entry in @(Get-CimInstance Win32_Process -Filter "Name = 'solder.exe'" -ErrorAction Stop)) {
+            if ([string]::IsNullOrWhiteSpace($entry.ExecutablePath)) {
+                if (Test-SolderProcessAlive ([int]$entry.ProcessId)) { $running = $true; break }
+                continue
+            }
+            if ((Resolve-PhysicalPath $entry.ExecutablePath).Equals($target, [StringComparison]::OrdinalIgnoreCase)) {
+                $running = $true; break
+            }
+        }
+    }
+    if ($running) {
+        Set-CoordinatorProgress $State 'manual-close' 'Save and close SolderCAD and Solder terminal sessions, then choose Retry.'
+        Fail 'This Solder release cannot restore open sessions automatically. Save and close them, then choose Retry.'
     }
 }
 
 function Close-SolderForUpdate {
-    param([string]$InstallRoot, [object]$State, [int]$CallerPid, [long]$CallerWindow, [object]$Held)
+    param([string]$InstallRoot, [object]$State, [int]$CallerPid, [long]$CallerWindow, [object]$Held, [string]$StagedApp, [bool]$CliRestoreSupported)
     Initialize-SolderWindowApi
     if ($State.CallerReopened) { $CallerPid = 0; $CallerWindow = 0 }
     $processes = @(Get-SolderGuiProcesses $InstallRoot)
     $State.Session.Processes = $processes
+    Assert-SolderStagedCliForRunningSessions $InstallRoot $State $CliRestoreSupported $processes
+    # The incoming release must be able to restore the records produced by
+    # the currently running v2 windows. Older packages remain installable
+    # after those windows are closed manually.
+    if ($processes.Count -gt 0) { Assert-SolderStagedReopenCapability $StagedApp $State }
     $State.Session | Add-Member -NotePropertyName CallerWindow -NotePropertyValue $CallerWindow
     if ($CallerPid -gt 0) {
         $caller = @($processes | Where-Object { $_.Id -eq $CallerPid })
@@ -1449,7 +1906,7 @@ function Close-SolderForUpdate {
 }
 
 function Close-SolderTerminalsForUpdate {
-    param([string]$InstallRoot, [object]$State)
+    param([string]$InstallRoot, [object]$State, [bool]$CliRestoreSupported)
     Initialize-SolderWindowApi
     $target = Join-Path $InstallRoot 'bin\solder.exe'
     foreach ($entry in @(Get-CimInstance Win32_Process -Filter "Name = 'solder.exe'" -ErrorAction Stop)) {
@@ -1462,6 +1919,10 @@ function Close-SolderTerminalsForUpdate {
         }
         $path = Resolve-PhysicalPath $entry.ExecutablePath
         if (-not $path.Equals($target, [StringComparison]::OrdinalIgnoreCase)) { continue }
+        if (-not $CliRestoreSupported) {
+            Set-CoordinatorProgress $State 'manual-close' 'Save and close SolderCAD and Solder terminal sessions, then choose Retry.'
+            Fail 'This Solder release cannot restore open sessions automatically. Save and close them, then choose Retry.'
+        }
         $captured = [pscustomobject]@{ Id=[int]$entry.ProcessId; Path=$path; Created=$entry.CreationDate }
         if (-not (Test-SolderProcessInstance $captured)) { continue }
         $commandArguments = @(if ($entry.CommandLine) { [SolderInstaller.NativePath]::SplitCommandLine($entry.CommandLine) })
@@ -2116,6 +2577,8 @@ function Start-SolderCoordinator {
                         $label.Text = 'The download could not finish. Check your connection and choose Retry. SolderCAD remains unchanged.'
                     } elseif ($state.Stage -eq 'chat-busy') {
                         $label.Text = 'Let Solder Chat finish, or stop its current and queued work. Answer any open question, then choose Retry.'
+                    } elseif ($state.Stage -eq 'manual-close') {
+                        $label.Text = 'This release cannot restore open sessions automatically. Save and close SolderCAD and Solder terminals, then choose Retry.'
                     } elseif ($state.Stage -eq 'closing') {
                         $label.Text = 'SolderCAD or a Solder terminal could not close safely. Finish saving or close the session, then choose Retry.'
                     } else {
@@ -2413,14 +2876,16 @@ try {
 
         if ($interactive) {
             Assert-CoordinatorNotCancelled $CoordinatorState
+            $cliRestoreSupported = Test-SolderStagedCliCapabilities $verifiedCli $CoordinatorState
+            Assert-SolderStagedCliForRunningSessions $InstallDir $CoordinatorState $cliRestoreSupported @(Get-SolderGuiProcesses $InstallDir)
             New-SolderReopenSession -InstallRoot $InstallDir -State $CoordinatorState -RequireNative $RequireReopenRecords
             $heldHosts = Open-SolderPreparedHosts -InstallRoot $InstallDir -State $CoordinatorState
             try {
-                Close-SolderForUpdate -InstallRoot $InstallDir -State $CoordinatorState -CallerPid $CallerProcessId -CallerWindow $CallerWindowHandle -Held $heldHosts
+                Close-SolderForUpdate -InstallRoot $InstallDir -State $CoordinatorState -CallerPid $CallerProcessId -CallerWindow $CallerWindowHandle -Held $heldHosts -StagedApp $payloadSolderCad -CliRestoreSupported $cliRestoreSupported
                 Close-SolderPreparedHosts -Held $heldHosts -State $CoordinatorState
             } finally { foreach ($held in $heldHosts) { $held.Pipe.Dispose(); $held.Process.Dispose() } }
             Assert-CoordinatorNotCancelled $CoordinatorState
-            Close-SolderTerminalsForUpdate -InstallRoot $InstallDir -State $CoordinatorState
+            Close-SolderTerminalsForUpdate -InstallRoot $InstallDir -State $CoordinatorState -CliRestoreSupported $cliRestoreSupported
             Assert-CoordinatorNotCancelled $CoordinatorState
             Assert-SolderClosedWindowRecords -State $CoordinatorState -CallerProject $RelaunchProject -CallerPid $CallerProcessId
             Assert-SolderProcessesClosed -InstallRoot $InstallDir
