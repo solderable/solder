@@ -719,6 +719,35 @@ function Recover-SolderTransaction {
     }
 }
 
+function Recover-SolderFailedPublication {
+    param([string]$InstallRoot, [object[]]$Original, [string]$StageIdentity)
+    $tx = Join-Path $InstallRoot '.solder-installer-transaction'
+    $prepublication = $false
+    if ($StageIdentity -and @($Original).Count -eq 3) {
+        try {
+            $owner = Join-Path $tx 'owner'
+            Assert-OrdinaryTarget $owner $false
+            $entries = @([IO.Directory]::EnumerateFileSystemEntries($tx) | ForEach-Object { [IO.Path]::GetFileName($_) })
+            $current = @((Get-TargetIdentity (Join-Path $InstallRoot 'SolderCAD') $true),
+                         (Get-TargetIdentity (Join-Path $InstallRoot 'bin\solder.exe') $false),
+                         (Get-TargetIdentity (Join-Path $InstallRoot 'bin\SolderCAD') $true))
+            if ((Get-TargetIdentity $tx $true) -ceq $StageIdentity -and
+                (Test-Path -LiteralPath $owner -PathType Leaf) -and
+                [IO.File]::ReadAllText($owner) -ceq 'solder-installer-transaction-v1' -and
+                'journal.json' -notin $entries -and 'committed' -notin $entries -and
+                $current[0] -ceq $Original[0] -and $current[1] -ceq $Original[1] -and $current[2] -ceq $Original[2]) {
+                $prepublication = $true
+            }
+        } catch { }
+    }
+    # Before the journal exists, the same owned staging directory and the
+    # unchanged live pair prove that no component was published. Cleaning that
+    # staging tree is safe even if a new editor has just opened. All other
+    # states retain the normal running-process guard before recovery.
+    if (-not $prepublication) { Assert-SolderProcessesClosed -InstallRoot $InstallRoot }
+    Recover-SolderTransaction -InstallRoot $InstallRoot
+}
+
 function Publish-SolderTransaction {
     param([string]$InstallRoot, [string]$PayloadRoot, [object[]]$Original, [string]$NewCliPath)
     if (-not $NewCliPath) { $NewCliPath = Join-Path $PayloadRoot 'solder.exe' }
@@ -2247,6 +2276,7 @@ try {
     }
 
     $verifiedCli = $null
+    $stageIdentity = $null
     try {
         Write-Host "Downloading $($download.DownloadUrl)"
         Set-CoordinatorProgress $CoordinatorState 'downloading' 'Downloading the update...'
@@ -2344,6 +2374,7 @@ try {
                 }
             }
             $relativePayload = $payloadRoot.Substring($work.Length).TrimStart('\')
+            $stageIdentity = Get-TargetIdentity $work $true
             [IO.Directory]::Move($work, $tx)
             $work = $tx
             $payloadRoot = Join-Path $tx $relativePayload
@@ -2372,8 +2403,7 @@ try {
                     [IO.Directory]::Delete($extendedWork, $true)
                 }
             } else {
-                Assert-SolderProcessesClosed -InstallRoot $InstallDir
-                Recover-SolderTransaction -InstallRoot $InstallDir
+                Recover-SolderFailedPublication -InstallRoot $InstallDir -Original $original -StageIdentity $stageIdentity
             }
             if ($interactive -and $null -ne $CoordinatorState.Session) {
                 Open-SolderReopenSession -InstallRoot $InstallDir -State $CoordinatorState -CallerProject $RelaunchProject -CallerPid $CallerProcessId -Required $false

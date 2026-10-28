@@ -500,6 +500,65 @@ public class GuiFixture {
     Assert-Condition ($opened.Count -eq 3 -and $opened -ccontains ('kicad.exe|' + $project) -and
         $opened -ccontains ('pcbnew.exe|' + $saved2) -and $opened -ccontains 'eeschema.exe|(empty)') 'post-save, hidden-child and empty documents were not reopened once each'
     Complete-SolderReopenSession $state
+
+    # A new editor can start after the first editor closes but before the
+    # publication guard. The unjournaled staging directory is disposable;
+    # the newcomer must stay open while the earlier saved window reopens.
+    Remove-Item -LiteralPath $env:SOLDER_TEST_OPENED
+    $first = Start-Process -FilePath $gui -ArgumentList 'close' -PassThru
+    $children.Add($first)
+    Wait-For { $first.Refresh(); $first.MainWindowHandle -ne 0 } 'the first editor fixture did not start'
+    $firstHandle=[long]$first.MainWindowHandle
+    $state=New-State
+    New-SolderReopenSession $root $state $true
+    Close-SolderForUpdate $root $state $first.Id $firstHandle
+    $record=[ordered]@{ schemaVersion=1; nonce=$state.Session.Nonce; pid=$first.Id; hwnd=[string]$firstHandle;
+        executable=$gui; project=$project; frameType='manager' } | ConvertTo-Json -Compress
+    Write-TransactionRecord (Join-Path $state.Session.Directory ("$($first.Id)-$firstHandle.json")) $record
+    $tx=Join-Path $root '.solder-installer-transaction'
+    $payload=Join-Path $tx 'payload'
+    New-Item -ItemType Directory -Force -Path (Join-Path $payload 'SolderCAD') | Out-Null
+    [IO.File]::Copy($cli,(Join-Path $payload 'solder.exe'))
+    Write-TransactionRecord (Join-Path $tx 'owner') 'solder-installer-transaction-v1'
+    $original=@((Get-TargetIdentity (Join-Path $root 'SolderCAD') $true),
+                (Get-TargetIdentity $cli $false), (Get-TargetIdentity (Join-Path $root 'bin\SolderCAD') $true))
+    $stageIdentity=Get-TargetIdentity $tx $true
+    $originalCliHash=Get-FileSha256 $cli
+    $newcomer=Start-Process -FilePath $gui -ArgumentList 'veto' -PassThru
+    $children.Add($newcomer)
+    Wait-For { $newcomer.Refresh(); $newcomer.MainWindowHandle -ne 0 } 'the later editor fixture did not start'
+    $blocked=$false
+    try { Publish-SolderTransaction $root $payload $original (Join-Path $payload 'solder.exe') } catch { $blocked=$true }
+    Assert-Condition ($blocked -and -not (Test-Path -LiteralPath (Join-Path $tx 'journal.json'))) 'a later editor did not stop publication before its journal'
+    Recover-SolderFailedPublication $root $original $stageIdentity
+    Assert-Condition (-not (Test-Path -LiteralPath $tx) -and -not $newcomer.HasExited -and
+        (Get-TargetIdentity (Join-Path $root 'SolderCAD') $true) -ceq $original[0] -and
+        (Get-FileSha256 $cli) -ceq $originalCliHash) 'pre-publication recovery changed the live pair or closed the later editor'
+    Open-SolderReopenSession $root $state $project $first.Id $true
+    Wait-For { Test-Path -LiteralPath $env:SOLDER_TEST_OPENED } 'the earlier saved window was not reopened'
+    Assert-Condition (([IO.File]::ReadAllText($env:SOLDER_TEST_OPENED)).Trim() -ceq ('kicad.exe|' + $project) -and
+        -not $newcomer.HasExited) 'the saved window was not restored while the later editor stayed open'
+    Complete-SolderReopenSession $state
+
+    # A journal, unknown ownership, changed original, or foreign stage must
+    # never take the unjournaled bypass while the later process remains open.
+    foreach($mode in @('journal','committed','owner','changed','foreign')) {
+        New-Item -ItemType Directory -Path $tx | Out-Null
+        $owner=if($mode -ceq 'owner'){'foreign-owner'}else{'solder-installer-transaction-v1'}
+        Write-TransactionRecord (Join-Path $tx 'owner') $owner
+        if($mode -ceq 'journal'){Write-TransactionRecord (Join-Path $tx 'journal.json') '{}'}
+        if($mode -ceq 'committed'){Write-TransactionRecord (Join-Path $tx 'committed') 'committed-v1'}
+        $testIdentity=Get-TargetIdentity $tx $true
+        $testOriginal=$original.Clone()
+        if($mode -ceq 'foreign'){$testIdentity='foreign-stage'}
+        if($mode -ceq 'changed'){$testOriginal[0]='foreign-app'}
+        $blocked=$false
+        try { Recover-SolderFailedPublication $root $testOriginal $testIdentity } catch { $blocked=$true }
+        Assert-Condition ($blocked -and (Test-Path -LiteralPath $tx) -and -not $newcomer.HasExited) "recovery bypassed a $mode transaction while an editor was open"
+        Remove-Item -LiteralPath $tx -Recurse -Force
+    }
+    Stop-Process -Id $newcomer.Id -Force
+    [void]$newcomer.WaitForExit(5000)
     Write-Output 'PASS seamless-update'
 } finally {
     foreach ($child in $children) {
