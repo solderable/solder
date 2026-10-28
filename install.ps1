@@ -1202,13 +1202,13 @@ function Assert-SolderRecordedDocument {
     if (-not [IO.Path]::IsPathRooted($Project) -or [IO.Path]::GetExtension($Project).ToLowerInvariant() -cne $Extension) {
         Fail 'A saved SolderCAD document does not match its window. Recovery files were preserved.'
     }
-    if ($Existed -or -not $ManagerOwned) {
-        if (-not $Existed -or -not (Test-Path -LiteralPath $Project -PathType Leaf)) {
+    if ($Existed) {
+        if (-not (Test-Path -LiteralPath $Project -PathType Leaf)) {
             Fail 'A saved SolderCAD document is unavailable. Recovery files were preserved.'
         }
         return
     }
-    # A named, never-saved manager child can be recreated only if its parent
+    # A named, never-saved document can be recreated only if its parent
     # is ordinary and no file, directory, or dangling link has appeared.
     $path = [IO.Path]::GetFullPath($Project)
     $parent = [IO.Path]::GetDirectoryName($path)
@@ -1482,7 +1482,9 @@ function Get-SolderStandaloneReopenTarget {
     $session = $State.Session
     $key = "$($Window.Process.Id)-$($Window.Handle)"
     if (-not $session.Standalones.ContainsKey($key)) {
-        $process = Open-SolderAfterUpdate -InstallRoot $InstallRoot -Executable $Entry.Executable -Project $Entry.Project -PassThru
+        $hint = "$($session.Nonce):$($Window.Process.Id):$($Window.Handle)"
+        $newDocument = -not $Entry.DocumentExisted -and -not [string]::IsNullOrWhiteSpace($Entry.Project)
+        $process = Open-SolderAfterUpdate -InstallRoot $InstallRoot -Executable $Entry.Executable -Project $Entry.Project -StandaloneHint $hint -NewDocument:$newDocument -PassThru
         # Store the exact process before readiness/ACK waits. Retry must not
         # start a second editor while this one is still loading its file.
         $session.Standalones[$key] = [pscustomobject]@{ Captured=$null; Handle=[long]0; Process=$process;
@@ -1737,7 +1739,7 @@ function Quote-SolderArgument {
 
 function Start-SolderGuiProcess {
     param([string]$Executable, [string]$WorkingDirectory, [string]$Project,
-          [bool]$NewEmptyManager = $false, [string]$ManagerHint)
+          [bool]$NewEmptyManager = $false, [string]$ManagerHint, [string]$StandaloneHint)
     Initialize-SolderWindowApi
     $start = New-Object Diagnostics.ProcessStartInfo
     $start.FileName = $Executable
@@ -1745,7 +1747,10 @@ function Start-SolderGuiProcess {
     $start.UseShellExecute = $false
     if ($Project) { $start.Arguments = Quote-SolderArgument $Project }
     elseif ($NewEmptyManager) { $start.Arguments = '-n' }
+    $start.EnvironmentVariables.Remove('SOLDER_UPDATE_REOPEN_MANAGER')
+    $start.EnvironmentVariables.Remove('SOLDER_UPDATE_REOPEN_STANDALONE')
     if ($ManagerHint) { $start.EnvironmentVariables['SOLDER_UPDATE_REOPEN_MANAGER'] = $ManagerHint }
+    if ($StandaloneHint) { $start.EnvironmentVariables['SOLDER_UPDATE_REOPEN_STANDALONE'] = $StandaloneHint }
     # A missing dependent DLL can display a Windows loader dialog indefinitely.
     # With CreateProcess and an inherited error mode, the child exits instead;
     # the launcher can then start the repair coordinator without hiding work.
@@ -1759,7 +1764,7 @@ function Start-SolderGuiProcess {
 
 function Open-SolderAfterUpdate {
     param([string]$InstallRoot, [string]$Executable, [string]$Project,
-          [string]$ManagerHint, [switch]$PassThru)
+          [string]$ManagerHint, [switch]$PassThru, [string]$StandaloneHint, [switch]$NewDocument)
     if ([string]::IsNullOrWhiteSpace($Executable)) { return }
     $app = (Join-Path $InstallRoot 'SolderCAD').TrimEnd('\') + '\'
     $executablePath = [IO.Path]::GetFullPath($Executable)
@@ -1780,13 +1785,20 @@ function Open-SolderAfterUpdate {
     $projectPath = ''
     if ($Project) {
         $projectPath = [IO.Path]::GetFullPath($Project)
-        if ([IO.Path]::GetExtension($projectPath).ToLowerInvariant() -notin @('.kicad_pro', '.kicad_sch', '.kicad_pcb') -or
-            -not (Test-Path -LiteralPath $projectPath -PathType Leaf)) {
+        $extension = [IO.Path]::GetExtension($projectPath).ToLowerInvariant()
+        if ($NewDocument) {
+            if ($StandaloneHint -cnotmatch '\A[0-9a-f]{32}:[1-9][0-9]*:[1-9][0-9]*\z' -or
+                $extension -cnotin @('.kicad_sch', '.kicad_pcb')) {
+                Fail 'A new SolderCAD document has no verified restore request. Recovery records were preserved.'
+            }
+            Assert-SolderRecordedDocument $projectPath $extension $false $false
+        } elseif ($extension -cnotin @('.kicad_pro', '.kicad_sch', '.kicad_pcb') -or
+                  -not (Test-Path -LiteralPath $projectPath -PathType Leaf)) {
             Fail "SolderCAD was installed, but the previous project could not be reopened."
         }
     }
     $emptyManager = -not $projectPath -and [IO.Path]::GetFileName($executablePath).Equals('kicad.exe', [StringComparison]::OrdinalIgnoreCase)
-    $process = Start-SolderGuiProcess -Executable $executablePath -WorkingDirectory ([IO.Path]::GetDirectoryName($executablePath)) -Project $projectPath -NewEmptyManager $emptyManager -ManagerHint $ManagerHint
+    $process = Start-SolderGuiProcess -Executable $executablePath -WorkingDirectory ([IO.Path]::GetDirectoryName($executablePath)) -Project $projectPath -NewEmptyManager $emptyManager -ManagerHint $ManagerHint -StandaloneHint $StandaloneHint
     $returned = $false
     try {
         if ($process.WaitForExit(2000)) {
@@ -1825,6 +1837,8 @@ function Assert-SolderStagedReopenCapability {
             $valid = $valid -and
                 ($capability.windowsStandaloneReopenProtocol -is [int] -or $capability.windowsStandaloneReopenProtocol -is [long]) -and $capability.windowsStandaloneReopenProtocol -eq 1 -and
                 ($capability.windowsUpdateSessionPhaseProtocol -is [int] -or $capability.windowsUpdateSessionPhaseProtocol -is [long]) -and $capability.windowsUpdateSessionPhaseProtocol -eq 1
+            $valid = $valid -and
+                ($capability.windowsNamedNewStandaloneProtocol -is [int] -or $capability.windowsNamedNewStandaloneProtocol -is [long]) -and $capability.windowsNamedNewStandaloneProtocol -eq 1
         }
     } catch { $valid = $false }
     if (-not $valid) {

@@ -524,7 +524,7 @@ public class GuiFixture {
     $stagedApp=Join-Path $root 'SolderCAD'
     $capabilityPath=Join-Path $stagedApp 'share\kicad\resources\solder_chat\windows-update-capabilities.json'
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $capabilityPath) | Out-Null
-    $capability='{"schemaVersion":1,"component":"soldercad","windowsUpdateCloseProtocol":2,"windowsManagerReopenProtocol":1,"windowsStandaloneReopenProtocol":1,"windowsUpdateSessionPhaseProtocol":1}'
+    $capability='{"schemaVersion":1,"component":"soldercad","windowsUpdateCloseProtocol":2,"windowsManagerReopenProtocol":1,"windowsStandaloneReopenProtocol":1,"windowsUpdateSessionPhaseProtocol":1,"windowsNamedNewStandaloneProtocol":1}'
     [IO.File]::WriteAllText($capabilityPath, $capability)
     $project = Join-Path $root ("saved project " + [char]0x03c0 + "'s.kicad_pro")
     New-Item -ItemType File -Path $project | Out-Null
@@ -544,7 +544,8 @@ public class GuiFixture {
     foreach($badCapability in @('', '{"schemaVersion":1,"component":"soldercad","windowsUpdateCloseProtocol":"2","windowsManagerReopenProtocol":1}',
         '{"schemaVersion":1,"component":"soldercad","windowsUpdateCloseProtocol":2,"windowsManagerReopenProtocol":2}',
         '{"schemaVersion":1,"component":"soldercad","windowsUpdateCloseProtocol":2,"windowsManagerReopenProtocol":1}',
-        '{"schemaVersion":1,"component":"soldercad","windowsUpdateCloseProtocol":2,"windowsManagerReopenProtocol":1,"windowsStandaloneReopenProtocol":1}')) {
+        '{"schemaVersion":1,"component":"soldercad","windowsUpdateCloseProtocol":2,"windowsManagerReopenProtocol":1,"windowsStandaloneReopenProtocol":1}',
+        '{"schemaVersion":1,"component":"soldercad","windowsUpdateCloseProtocol":2,"windowsManagerReopenProtocol":1,"windowsStandaloneReopenProtocol":1,"windowsUpdateSessionPhaseProtocol":1}')) {
         if ($badCapability) { [IO.File]::WriteAllText($capabilityPath, $badCapability) }
         else { Remove-Item -LiteralPath $capabilityPath -ErrorAction SilentlyContinue }
         $refused=$false
@@ -827,8 +828,9 @@ public class GuiFixture {
     Close-TestRestoredManagers $state
     Complete-SolderReopenSession $state
 
-    # A live standalone process is not proof its requested file loaded. A
-    # missing ACK preserves its checkpoint and Retry reuses the same process.
+    # A blank standalone receives a named, absent untitled document. It can
+    # reopen that exact path through a scoped native startup hint, without a
+    # file being created on disk. A missing ACK retains its exact process.
     Remove-Item -LiteralPath $env:SOLDER_TEST_OPENED -ErrorAction SilentlyContinue
     [IO.File]::WriteAllText($env:SOLDER_TEST_MANAGER_STATUS, 'noack')
     $standaloneExe=Join-Path $root 'SolderCAD\bin\pcbnew.exe'
@@ -841,13 +843,19 @@ public class GuiFixture {
     Close-SolderForUpdate $root $state $standalone.Id $standaloneHandle -StagedApp $stagedApp -CliRestoreSupported $true
     $captured=@($state.Session.Processes | Where-Object {$_.Id -eq $standalone.Id})[0]
     $standalonePath=Join-Path $state.Session.Directory ("$($standalone.Id)-$standaloneHandle.json")
+    $newStandaloneDocument=Join-Path $root 'untitled.kicad_pcb'
     $standaloneRecord=[ordered]@{schemaVersion=1;nonce=$state.Session.Nonce;pid=$standalone.Id;hwnd=[string]$standaloneHandle;
-        executable=$standaloneExe;project=$saved2;frameType='pcb';managerHwnd='0';managerStartTime='0';managerProject='';documentExisted=$true}|ConvertTo-Json -Compress
+        executable=$standaloneExe;project=$newStandaloneDocument;frameType='pcb';managerHwnd='0';managerStartTime='0';managerProject='';documentExisted=$false}|ConvertTo-Json -Compress
     Write-TransactionRecord $standalonePath $standaloneRecord
     $window=@($state.Session.Windows | Where-Object {$_.Process.Id -eq $standalone.Id -and $_.Handle -eq $standaloneHandle})[0]
+    [IO.File]::WriteAllText($newStandaloneDocument,'foreign path occupant')
+    $failed=$false
+    try { [void](Get-SolderReopenEntry $state.Session $window '' 0 $true) } catch {$failed=$true}
+    Assert-Condition ($failed -and ([IO.File]::ReadAllText($newStandaloneDocument)) -ceq 'foreign path occupant') 'an occupied new standalone path was accepted or modified'
+    [IO.File]::Delete($newStandaloneDocument)
     $entry=Get-SolderReopenEntry $state.Session $window '' 0 $true
-    $target=Get-SolderStandaloneReopenTarget $root $state $window $entry 0
     Set-SolderSessionReopening $state
+    $target=Get-SolderStandaloneReopenTarget $root $state $window $entry 0
     $firstStandaloneId=$target.Process.Id
     $failed=$false
     try { Invoke-SolderManagerReopen $state $window $entry $target 500 } catch {$failed=$true}
@@ -857,7 +865,9 @@ public class GuiFixture {
     Open-SolderReopenSession $root $state '' 0 $true
     Assert-Condition ($state.Session.Opened.Contains($standalonePath) -and @($state.Session.Standalones.Values).Count -eq 1 -and
         @($state.Session.Standalones.Values)[0].Process.Id -eq $firstStandaloneId -and
-        @([IO.File]::ReadAllLines($env:SOLDER_TEST_OPENED)).Count -eq 1) 'standalone Retry duplicated the editor or skipped the document acknowledgement'
+        @([IO.File]::ReadAllLines($env:SOLDER_TEST_OPENED)).Count -eq 1 -and
+        ([IO.File]::ReadAllText($env:SOLDER_TEST_OPENED)).Trim() -ceq ('pcbnew.exe|' + $newStandaloneDocument) -and
+        -not (Test-Path -LiteralPath $newStandaloneDocument)) 'new standalone Retry duplicated the editor, changed its path or created a file'
     Close-TestRestoredManagers $state
     Complete-SolderReopenSession $state
 
