@@ -9,6 +9,7 @@ import { join } from "node:path";
 if (process.platform === "win32") {
   const scenarios: Record<string, string> = {
     "only one installer owns the shared lease": "lease",
+    "reopened children do not inherit either installer lease": "lease-child-inheritance",
     "restores an interrupted installation without network access": "offline-interrupted-recovery",
     "recovers when verification is interrupted with its executable still open": "interrupted-verifier",
     "refuses known component downgrades while allowing unknown versions": "downgrade-policy",

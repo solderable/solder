@@ -290,6 +290,8 @@ namespace SolderInstaller {
     private static extern uint GetFinalPathNameByHandle(SafeFileHandle handle, StringBuilder path, uint length, uint flags);
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool GetFileInformationByHandle(SafeFileHandle handle, out FileInformation info);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetHandleInformation(IntPtr handle, uint mask, uint flags);
     [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern IntPtr CommandLineToArgvW(string commandLine, out int count);
     [DllImport("kernel32.dll")]
@@ -313,6 +315,9 @@ namespace SolderInstaller {
         if (!GetFileInformationByHandle(handle, out info)) throw new Win32Exception(Marshal.GetLastWin32Error());
         return String.Format("{0:X8}:{1:X8}:{2:X8}", info.VolumeSerialNumber, info.FileIndexHigh, info.FileIndexLow);
       }
+    }
+    public static void PreventInheritance(IntPtr handle) {
+      if (!SetHandleInformation(handle, 1, 0)) throw new Win32Exception(Marshal.GetLastWin32Error());
     }
     public static string[] SplitCommandLine(string commandLine) {
       int count;
@@ -361,9 +366,12 @@ function Enter-SolderInstallLease {
             $port = [int](16384 + ($value % 32768))
             if (-not $ports.Add($port)) { continue }
             $listener = New-Object Net.Sockets.TcpListener ([Net.IPAddress]::Loopback), $port
+            $listeners.Add($listener)
             $listener.ExclusiveAddressUse = $true
             $listener.Start()
-            $listeners.Add($listener)
+            # PowerShell 5.1 creates inheritable sockets. A reopened GUI child
+            # must not keep this process lease alive after the worker exits.
+            [SolderInstaller.NativePath]::PreventInheritance($listener.Server.Handle)
         }
     } catch {
         $cause = $_.Exception
@@ -1165,6 +1173,13 @@ function Open-SolderReopenSession {
         if ($State.Session.Opened.Contains($entry.Key)) { continue }
         Open-SolderAfterUpdate -InstallRoot $InstallRoot -Executable $entry.Executable -Project $entry.Project
         [void]$State.Session.Opened.Add($entry.Key)
+        $callerWindow = $State.Session.PSObject.Properties['CallerWindow']
+        if ($CallerPid -gt 0 -and $null -ne $callerWindow -and $window.Process.Id -eq $CallerPid -and
+            $window.Handle -eq $callerWindow.Value -and $entry.Key -ceq $recordPath) {
+            # Persist across Retry: the restored caller gets a new PID, and a
+            # Save As record can differ from the original launch argument.
+            $State.CallerReopened = $true
+        }
     }
     foreach ($file in @(Get-ChildItem -LiteralPath $State.Session.Directory -File -Force -Filter 'cli-*.json')) {
         if ($file.Name -cnotmatch '\Acli-([0-9]+)\.json\z') { Fail 'An unrecognized terminal recovery record was preserved.' }
@@ -1311,6 +1326,7 @@ function Open-SolderAfterUpdate {
 function Close-SolderForUpdate {
     param([string]$InstallRoot, [object]$State, [int]$CallerPid, [long]$CallerWindow, [object]$Held)
     Initialize-SolderWindowApi
+    if ($State.CallerReopened) { $CallerPid = 0; $CallerWindow = 0 }
     $processes = @(Get-SolderGuiProcesses $InstallRoot)
     $State.Session.Processes = $processes
     $State.Session | Add-Member -NotePropertyName CallerWindow -NotePropertyValue $CallerWindow
@@ -1869,8 +1885,11 @@ function Open-SolderUpdateWindows {
     param([string]$InstallRoot, [object]$State, [string]$Executable, [string]$Project, [int]$CallerPid, [bool]$Required)
     if ($null -eq $State.Session) { return }
     Open-SolderReopenSession -InstallRoot $InstallRoot -State $State -CallerProject $Project -CallerPid $CallerPid -Required $Required
-    if (($State.Session.Windows.Count -eq 0 -or @($State.Session.Windows | Where-Object { $_.Process.Id -eq $CallerPid }).Count -eq 0) -and
-        -not $State.Session.Opened.Contains('caller-fallback')) {
+    $callerWindow = $State.Session.PSObject.Properties['CallerWindow']
+    $callerCaptured = $null -ne $callerWindow -and @($State.Session.Windows | Where-Object {
+        $_.Process.Id -eq $CallerPid -and $_.Handle -eq $callerWindow.Value
+    }).Count -gt 0
+    if (-not $State.CallerReopened -and -not $callerCaptured -and -not $State.Session.Opened.Contains('caller-fallback')) {
         Open-SolderAfterUpdate -InstallRoot $InstallRoot -Executable $Executable -Project $Project
         [void]$State.Session.Opened.Add('caller-fallback')
     }
@@ -1965,7 +1984,7 @@ function Start-SolderCoordinator {
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
     [Windows.Forms.Application]::EnableVisualStyles()
-    $state = [hashtable]::Synchronized(@{ Stage='starting'; Message='Preparing the update...'; CancelRequested=$false; CanCancel=$true; ClosedAny=$false; PublicationCommitted=$false; PublicationComplete=$false; SetupComplete=$false; PendingRestore=$false; Session=$null })
+    $state = [hashtable]::Synchronized(@{ Stage='starting'; Message='Preparing the update...'; CancelRequested=$false; CanCancel=$true; ClosedAny=$false; PublicationCommitted=$false; PublicationComplete=$false; SetupComplete=$false; PendingRestore=$false; CallerReopened=$false; Session=$null })
     $ui = @{ Worker=$null; Async=$null; Finished=$false; SuccessAt=$null; State=$state }
     $form = New-Object Windows.Forms.Form
     $form.Text = 'SolderCAD Update'

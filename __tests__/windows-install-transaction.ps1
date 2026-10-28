@@ -62,7 +62,7 @@ try {
             [IO.Directory]::Move((Join-Path $root 'SolderCAD'), $paths.backupApp)
             [IO.File]::Move((Join-Path $root 'bin\solder.exe'), $paths.backupCli)
             function Invoke-RestMethod { throw 'fixture network unavailable' }
-            $state = [hashtable]::Synchronized(@{ Stage=''; Message=''; CancelRequested=$false; CanCancel=$true; ClosedAny=$false; PublicationCommitted=$false; PublicationComplete=$false; SetupComplete=$false; PendingRestore=$false; Session=$null })
+            $state = [hashtable]::Synchronized(@{ Stage=''; Message=''; CancelRequested=$false; CanCancel=$true; ClosedAny=$false; PublicationCommitted=$false; PublicationComplete=$false; SetupComplete=$false; PendingRestore=$false; CallerReopened=$false; Session=$null })
             $installerScript = [scriptblock]::Create([IO.File]::ReadAllText($Installer))
             $failed = $false
             try { & $installerScript -InstallDir $root -Version '1.36.0' -NoUserIntegration -InternalCoordinator -CoordinatorState $state }
@@ -78,6 +78,26 @@ try {
                 $ports = @($owner.Listeners | ForEach-Object { $_.LocalEndpoint.Port })
                 Write-Output ("PORTS=" + ($ports -join ','))
             } finally { $owner.Stop() }
+        }
+        'lease-child-inheritance' {
+            $exe=Join-Path $root 'child.exe'
+            $sentinel=Join-Path $root 'child-exit'
+            Add-Type -OutputAssembly $exe -OutputType WindowsApplication -TypeDefinition 'using System.IO; using System.Threading; public static class Child { public static void Main(string[] a) { while (!File.Exists(a[0])) Thread.Sleep(50); } }'
+            $owner=$null;$child=$null;$next=$null
+            try {
+                $owner=Enter-SolderInstallLease $root
+                $ports=@($owner.Listeners | ForEach-Object { $_.LocalEndpoint.Port } | Sort-Object)
+                $child=Start-SolderGuiProcess -Executable $exe -WorkingDirectory $root -Project $sentinel
+                Assert-Condition (-not $child.HasExited) 'the child fixture exited prematurely'
+                $owner.Stop();$owner=$null
+                $next=Enter-SolderInstallLease $root
+                $nextPorts=@($next.Listeners | ForEach-Object { $_.LocalEndpoint.Port } | Sort-Object)
+                Assert-Condition (($ports -join ',') -ceq ($nextPorts -join ',') -and -not $child.HasExited) 'a reopened child retained an installer lease'
+            } finally {
+                if($next){$next.Stop()};if($owner){$owner.Stop()}
+                [IO.File]::WriteAllText($sentinel,'exit')
+                if($child -and -not $child.WaitForExit(5000)){throw 'the disposable child did not exit normally'}
+            }
         }
         'interrupted-verifier' {
             $tx = Join-Path $root '.solder-installer-transaction'

@@ -12,7 +12,7 @@ foreach ($statement in $ast.EndBlock.Statements) {
 }
 function Assert-Condition([bool]$Value, [string]$Message) { if (-not $Value) { throw $Message } }
 function New-State {
-    return [hashtable]::Synchronized(@{ Stage=''; Message=''; CancelRequested=$false; CanCancel=$true; ClosedAny=$false; PublicationCommitted=$false; PublicationComplete=$false; SetupComplete=$false; PendingRestore=$false; Session=$null })
+    return [hashtable]::Synchronized(@{ Stage=''; Message=''; CancelRequested=$false; CanCancel=$true; ClosedAny=$false; PublicationCommitted=$false; PublicationComplete=$false; SetupComplete=$false; PendingRestore=$false; CallerReopened=$false; Session=$null })
 }
 function Wait-For([scriptblock]$Condition, [string]$Message) {
     $deadline = [Diagnostics.Stopwatch]::StartNew()
@@ -355,7 +355,9 @@ public class GuiFixture {
  [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern bool SetPropW(IntPtr hwnd, string name, IntPtr value);
  [STAThread] public static void Main(string[] args) {
   if (args.Length == 0 || (args[0] != "close" && args[0] != "veto" && args[0] != "delayed" && args[0] != "legacy" && args[0] != "owned" && args[0] != "untitled")) {
-   File.AppendAllText(Environment.GetEnvironmentVariable("SOLDER_TEST_OPENED"), Path.GetFileName(Application.ExecutablePath) + "|" + (args.Length == 0 ? "(empty)" : args[0]) + "\n"); return;
+   File.AppendAllText(Environment.GetEnvironmentVariable("SOLDER_TEST_OPENED"), Path.GetFileName(Application.ExecutablePath) + "|" + (args.Length == 0 ? "(empty)" : args[0]) + "\n");
+   if (Environment.GetEnvironmentVariable("SOLDER_TEST_KEEP_REOPENED") != "1") return;
+   args = new[] { "close" };
   }
   var f = new Form(); f.Text="Solder fixture"; f.StartPosition=FormStartPosition.Manual;
   f.HandleCreated += (sender,e) => { if(args[0]!="legacy") SetPropW(f.Handle,"SolderCAD.UpdateCloseProtocol.v1",new IntPtr(1)); };
@@ -559,11 +561,81 @@ public class GuiFixture {
     }
     Stop-Process -Id $newcomer.Id -Force
     [void]$newcomer.WaitForExit(5000)
+
+    # A cancelled attempt can reopen the initiating frame with a new PID.
+    # Retry must reopen the new record once, without also launching a stale
+    # original path (including after Save As or an untitled window).
+    function Assert-CallerRetry([string]$CallerProject, [string]$SavedProject, [string]$Expected, [bool]$ReusedHandle) {
+        Remove-Item -LiteralPath $env:SOLDER_TEST_OPENED -ErrorAction SilentlyContinue
+        $env:SOLDER_TEST_KEEP_REOPENED='1'
+        $caller=Start-Process -FilePath $gui -ArgumentList 'close' -PassThru
+        $children.Add($caller)
+        Wait-For { $caller.Refresh(); $caller.MainWindowHandle -ne 0 } 'the original caller did not start'
+        $callerHandle=[long]$caller.MainWindowHandle
+        $state=New-State
+        New-SolderReopenSession $root $state $true
+        Close-SolderForUpdate $root $state $caller.Id $callerHandle
+        $record=[ordered]@{ schemaVersion=1; nonce=$state.Session.Nonce; pid=$caller.Id; hwnd=[string]$callerHandle;
+            executable=$gui; project=$SavedProject; frameType='manager' } | ConvertTo-Json -Compress
+        Write-TransactionRecord (Join-Path $state.Session.Directory ("$($caller.Id)-$callerHandle.json")) $record
+        Open-SolderReopenSession $root $state $CallerProject $caller.Id $false
+        Complete-SolderReopenSession $state
+        $restored=$null
+        Wait-For {
+            $running=@(Get-SolderGuiProcesses $root)
+            if($running.Count -ne 1 -or $running[0].Id -eq $caller.Id){return $false}
+            $script:retryRestoredId=$running[0].Id
+            $restoredProcess=Get-Process -Id $running[0].Id
+            $restoredProcess.Refresh()
+            return $restoredProcess.MainWindowHandle -ne 0
+        } 'the original caller was not restored with a new process'
+        $restored=Get-Process -Id $script:retryRestoredId
+        $children.Add($restored)
+        $restoredHandle=[long]$restored.MainWindowHandle
+        $env:SOLDER_TEST_KEEP_REOPENED='0'
+        New-SolderReopenSession $root $state $true
+        $retryHandle=if($ReusedHandle){$restoredHandle}else{$callerHandle}
+        Close-SolderForUpdate $root $state $caller.Id $retryHandle
+        $record=[ordered]@{ schemaVersion=1; nonce=$state.Session.Nonce; pid=$restored.Id; hwnd=[string]$restoredHandle;
+            executable=$gui; project=$SavedProject; frameType='manager' } | ConvertTo-Json -Compress
+        Write-TransactionRecord (Join-Path $state.Session.Directory ("$($restored.Id)-$restoredHandle.json")) $record
+        Open-SolderUpdateWindows $root $state $gui $CallerProject $caller.Id $true
+        $opened=@([IO.File]::ReadAllLines($env:SOLDER_TEST_OPENED))
+        Assert-Condition ($opened.Count -eq 2 -and $opened[0] -ceq ('kicad.exe|' + $Expected) -and
+            $opened[1] -ceq ('kicad.exe|' + $Expected)) 'retry reopened a saved caller twice or used a stale document path'
+        Complete-SolderReopenSession $state
+    }
+    $savedAs=Join-Path $root 'saved-as.kicad_pro'
+    [IO.File]::Copy($project,$savedAs)
+    Assert-CallerRetry $project $savedAs $savedAs $false
+    Assert-CallerRetry '' '' '(empty)' $true
+    Remove-Item -LiteralPath $env:SOLDER_TEST_OPENED -ErrorAction SilentlyContinue
+    $state=New-State
+    New-SolderReopenSession $root $state $true
+    Open-SolderUpdateWindows $root $state $gui $project 987654 $false
+    Assert-Condition (([IO.File]::ReadAllText($env:SOLDER_TEST_OPENED)).Trim() -ceq ('kicad.exe|' + $project)) 'an uncaptured caller did not use its fallback'
+    Complete-SolderReopenSession $state
+
+    # A sibling frame can share the caller PID without being the caller HWND.
+    # Its record must not suppress the missing caller's fallback.
+    Remove-Item -LiteralPath $env:SOLDER_TEST_OPENED -ErrorAction SilentlyContinue
+    $state=New-State
+    New-SolderReopenSession $root $state $true
+    $state.Session.Processes=@([pscustomobject]@{Id=987654;Path=$gui})
+    $state.Session | Add-Member -NotePropertyName CallerWindow -NotePropertyValue ([long]87654321)
+    $sibling=[ordered]@{schemaVersion=1;nonce=$state.Session.Nonce;pid=987654;hwnd='987654321';
+        executable=$gui;project=$saved2;frameType='pcb'}|ConvertTo-Json -Compress
+    Write-TransactionRecord (Join-Path $state.Session.Directory '987654-987654321.json') $sibling
+    Open-SolderUpdateWindows $root $state $gui $project 987654 $true
+    $opened=@([IO.File]::ReadAllLines($env:SOLDER_TEST_OPENED))
+    Assert-Condition (-not $state.CallerReopened -and $opened.Count -eq 2 -and
+        $opened -ccontains ('pcbnew.exe|' + $saved2) -and $opened -ccontains ('kicad.exe|' + $project)) 'a sibling frame suppressed the uncaptured caller fallback'
+    Complete-SolderReopenSession $state
     Write-Output 'PASS seamless-update'
 } finally {
     foreach ($child in $children) {
         try { if (-not $child.HasExited) { Stop-Process -Id $child.Id -Force -ErrorAction SilentlyContinue } } catch { }
     }
-    Remove-Item Env:SOLDER_TEST_OPENED, Env:SOLDER_TEST_PIPE_READY, Env:SOLDER_TEST_HOST_RELEASED, Env:SOLDER_TEST_CLI_OPENED -ErrorAction SilentlyContinue
+    Remove-Item Env:SOLDER_TEST_OPENED, Env:SOLDER_TEST_PIPE_READY, Env:SOLDER_TEST_HOST_RELEASED, Env:SOLDER_TEST_CLI_OPENED, Env:SOLDER_TEST_KEEP_REOPENED -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }
