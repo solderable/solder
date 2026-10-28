@@ -1741,21 +1741,41 @@ function Test-SolderOwnedShortcut {
 }
 
 function Set-SolderManagedShortcut {
-    param([string]$ShortcutPath, [string]$InstallRoot, [string]$RepairScript, [bool]$Repair)
+    param([string]$ShortcutPath, [string]$InstallRoot, [string]$RepairScript, [bool]$Repair, [bool]$OnlyOwned = $false)
     $shell = New-Object -ComObject WScript.Shell
-    $shortcut = $shell.CreateShortcut($ShortcutPath)
-    $shortcut.TargetPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $target = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $directory = Split-Path -Parent $ShortcutPath
+    Assert-OrdinaryTarget -Path $directory -Directory $true
+    Assert-OrdinaryTarget -Path $ShortcutPath -Directory $false
+    $originalIdentity = Get-TargetIdentity $ShortcutPath $false
+    $originalHash = if ($null -ne $originalIdentity) { Get-FileSha256 $ShortcutPath } else { $null }
+    if ($OnlyOwned -and ($null -eq $originalIdentity -or -not (Test-SolderOwnedShortcut -ShortcutPath $ShortcutPath -InstallRoot $InstallRoot))) { return }
     $arguments = Get-SolderLauncherArguments $InstallRoot $RepairScript $Repair
     if ($arguments.Length -gt 1000) { Fail 'The installation path is too long for a Windows shortcut.' }
-    $shortcut.Arguments = $arguments
-    $shortcut.WorkingDirectory = $InstallRoot
-    $shortcut.IconLocation = (Join-Path $InstallRoot 'SolderCAD\bin\kicad.exe') + ',0'
-    $shortcut.Description = if ($Repair) { 'Repair SolderCAD' } else { 'SolderCAD' }
-    $shortcut.WindowStyle = 7
-    $shortcut.Save()
-    if (($shell.CreateShortcut($ShortcutPath)).Arguments -cne $arguments) {
-        Fail 'Windows could not save the complete SolderCAD shortcut.'
-    }
+    $temporary = Join-Path $directory ('.solder-shortcut-' + [Guid]::NewGuid().ToString('N') + '.lnk')
+    try {
+        $shortcut = $shell.CreateShortcut($temporary)
+        $shortcut.TargetPath = $target
+        $shortcut.Arguments = $arguments
+        $shortcut.WorkingDirectory = $InstallRoot
+        $shortcut.IconLocation = (Join-Path $InstallRoot 'SolderCAD\bin\kicad.exe') + ',0'
+        $shortcut.Description = if ($Repair) { 'Repair SolderCAD' } else { 'SolderCAD' }
+        $shortcut.WindowStyle = 7
+        $shortcut.Save()
+        $saved = $shell.CreateShortcut($temporary)
+        if ($saved.Arguments -cne $arguments -or -not $saved.TargetPath.Equals($target, [StringComparison]::OrdinalIgnoreCase)) {
+            Fail 'Windows could not save the complete SolderCAD shortcut.'
+        }
+        if ((Get-TargetIdentity $ShortcutPath $false) -cne $originalIdentity -or
+            ($null -ne $originalIdentity -and (Get-FileSha256 $ShortcutPath) -cne $originalHash)) {
+            Fail 'The SolderCAD shortcut changed while it was being updated. The current shortcut was preserved.'
+        }
+        if (Test-Path -LiteralPath $ShortcutPath) {
+            $previous = Join-Path $directory ('.solder-shortcut-previous-' + [Guid]::NewGuid().ToString('N') + '.lnk')
+            [IO.File]::Replace($temporary, $ShortcutPath, $previous)
+            try { [IO.File]::Delete($previous) } catch { Write-Warning "Previous shortcut retained at '$previous'." }
+        } else { [IO.File]::Move($temporary, $ShortcutPath) }
+    } finally { if (Test-Path -LiteralPath $temporary) { [IO.File]::Delete($temporary) } }
 }
 
 function Write-SolderCoordinatorLog {
@@ -1804,9 +1824,7 @@ function Complete-SolderPublishedInstall {
                 if (-not $NoIntegration) { New-Item -ItemType Directory -Path $desktop -Force | Out-Null }
                 foreach ($shortcut in @(@{ Name='SolderCAD.lnk'; Repair=$false }, @{ Name='SolderCAD Repair.lnk'; Repair=$true })) {
                     $path = Join-Path $desktop $shortcut.Name
-                    if (-not $NoIntegration -or (Test-SolderOwnedShortcut -ShortcutPath $path -InstallRoot $InstallRoot)) {
-                        Set-SolderManagedShortcut -ShortcutPath $path -InstallRoot $InstallRoot -RepairScript $helper -Repair $shortcut.Repair
-                    }
+                    Set-SolderManagedShortcut -ShortcutPath $path -InstallRoot $InstallRoot -RepairScript $helper -Repair $shortcut.Repair -OnlyOwned $NoIntegration
                 }
             }
             if (-not $NoIntegration) {
@@ -1841,9 +1859,38 @@ function Complete-SolderPublishedInstall {
     }
 }
 
+function New-SolderCoordinatorStartAction {
+    param([object]$State, [object]$Ui, [object]$Retry, [object]$Cancel, [object]$Progress,
+          [string]$Source, [hashtable]$WorkerParameters)
+    return {
+        $State.Stage = 'starting'
+        $State.Message = 'Preparing the update...'
+        $State.CancelRequested = $false
+        $reopenOnly = $State.PublicationCommitted -or $State.PendingRestore
+        $State.CanCancel = -not $reopenOnly
+        if (-not $reopenOnly) { $State.ClosedAny = $false }
+        $Ui.Finished = $false
+        $Ui.SuccessAt = $null
+        $Retry.Visible = $false
+        $Cancel.Text = 'Cancel'
+        $Cancel.Enabled = $true
+        $Progress.Style = [Windows.Forms.ProgressBarStyle]::Marquee
+        $worker = [PowerShell]::Create()
+        [void]$worker.AddScript($Source)
+        # The event callback runs in a dynamic module. Capture all installer
+        # options explicitly before creating that closure, not from script scope.
+        $parameters = $WorkerParameters.Clone()
+        $parameters.InternalReopen = $reopenOnly
+        [void]$worker.AddParameters($parameters)
+        $Ui.Worker = $worker
+        $Ui.Async = $worker.BeginInvoke()
+    }.GetNewClosure()
+}
+
 function Start-SolderCoordinator {
     param([string]$ScriptPath, [string]$InstallRoot, [string]$Executable, [string]$Project,
-          [int]$CallerPid, [long]$CallerWindow)
+          [int]$CallerPid, [long]$CallerWindow, [bool]$NoIntegration, [bool]$Manage,
+          [bool]$RequireRecords, [string]$RequestedVersion, [string]$RequestedSource)
     if (-not (Test-Path -LiteralPath $ScriptPath -PathType Leaf)) {
         Fail "The update helper could not be opened. Please try again."
     }
@@ -1881,29 +1928,11 @@ function Start-SolderCoordinator {
     $cancel.Size = New-Object Drawing.Size(85, 30)
     $form.Controls.Add($cancel)
     $source = [IO.File]::ReadAllText($ScriptPath)
-    $startWorker = {
-        $state.Stage = 'starting'
-        $state.Message = 'Preparing the update...'
-        $state.CancelRequested = $false
-        $reopenOnly = $state.PublicationCommitted -or $state.PendingRestore
-        $state.CanCancel = -not $reopenOnly
-        if (-not $reopenOnly) { $state.ClosedAny = $false }
-        $ui.Finished = $false
-        $ui.SuccessAt = $null
-        $retry.Visible = $false
-        $cancel.Text = 'Cancel'
-        $cancel.Enabled = $true
-        $progress.Style = [Windows.Forms.ProgressBarStyle]::Marquee
-        $worker = [PowerShell]::Create()
-        [void]$worker.AddScript($source)
-        [void]$worker.AddParameters(@{ InstallDir=$InstallRoot; Version=$Version; DownloadSource=$DownloadSource;
-                                      InstallerScriptPath=$ScriptPath; NoUserIntegration=$NoUserIntegration; ManageLauncher=$ManageLauncher;
-                                      RequireReopenRecords=$RequireReopenRecords; InternalCoordinator=$true; InternalReopen=$reopenOnly;
-                                      CoordinatorState=$state; RelaunchExecutable=$Executable; RelaunchProject=$Project;
-                                      CallerProcessId=$CallerPid; CallerWindowHandle=$CallerWindow })
-        $ui.Worker = $worker
-        $ui.Async = $worker.BeginInvoke()
-    }.GetNewClosure()
+    $workerParameters = @{ InstallDir=$InstallRoot; Version=$RequestedVersion; DownloadSource=$RequestedSource;
+                           InstallerScriptPath=$ScriptPath; NoUserIntegration=$NoIntegration; ManageLauncher=$Manage;
+                           RequireReopenRecords=$RequireRecords; InternalCoordinator=$true; CoordinatorState=$state;
+                           RelaunchExecutable=$Executable; RelaunchProject=$Project; CallerProcessId=$CallerPid; CallerWindowHandle=$CallerWindow }
+    $startWorker = New-SolderCoordinatorStartAction -State $state -Ui $ui -Retry $retry -Cancel $cancel -Progress $progress -Source $source -WorkerParameters $workerParameters
     $retry.Add_Click({ & $startWorker }.GetNewClosure())
     $cancel.Add_Click({
         if ($ui.Finished) { $form.Close(); return }
@@ -2015,7 +2044,7 @@ if ($InteractiveUpdate) {
     if (-not $RelaunchExecutable -and ($autoInteractive -or $Repair)) {
         $RelaunchExecutable = Join-Path ([IO.Path]::GetFullPath($InstallDir)) 'SolderCAD\bin\kicad.exe'
     }
-    try { Start-SolderCoordinator -ScriptPath $InstallerScriptPath -InstallRoot $InstallDir -Executable $RelaunchExecutable -Project $RelaunchProject -CallerPid $CallerProcessId -CallerWindow $CallerWindowHandle }
+    try { Start-SolderCoordinator -ScriptPath $InstallerScriptPath -InstallRoot $InstallDir -Executable $RelaunchExecutable -Project $RelaunchProject -CallerPid $CallerProcessId -CallerWindow $CallerWindowHandle -NoIntegration $NoUserIntegration -Manage $ManageLauncher -RequireRecords $RequireReopenRecords -RequestedVersion $Version -RequestedSource $DownloadSource }
     finally { if ($temporaryHelper) { [IO.File]::Delete($temporaryHelper) } }
     return
 }

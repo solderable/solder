@@ -28,6 +28,53 @@ New-Item -ItemType Directory -Path $root | Out-Null
 $children = New-Object 'System.Collections.Generic.List[System.Diagnostics.Process]'
 try {
     $root = Resolve-PhysicalPath $root
+    # The real Windows Forms event and background PowerShell runspace must
+    # retain every caller option, including when the user chooses Retry.
+    Add-Type -AssemblyName System.Windows.Forms
+    $workerSource = Join-Path $root 'coordinator-options-fixture.ps1'
+    $workerText = @'
+[CmdletBinding()]
+param([string]$InstallDir,[string]$Version,[ValidateSet('Auto','GitHub')][string]$DownloadSource,
+      [string]$InstallerScriptPath,[switch]$NoUserIntegration,[switch]$ManageLauncher,
+      [switch]$RequireReopenRecords,[switch]$InternalCoordinator,[switch]$InternalReopen,
+      [object]$CoordinatorState,[string]$RelaunchExecutable,[string]$RelaunchProject,
+      [int]$CallerProcessId,[long]$CallerWindowHandle)
+$record=[ordered]@{Version=$Version;DownloadSource=$DownloadSource;NoUserIntegration=[bool]$NoUserIntegration;
+ ManageLauncher=[bool]$ManageLauncher;RequireReopenRecords=[bool]$RequireReopenRecords;
+ InternalCoordinator=[bool]$InternalCoordinator;InternalReopen=[bool]$InternalReopen;
+ InstallerScriptPath=$InstallerScriptPath;InstallDir=$InstallDir;RelaunchExecutable=$RelaunchExecutable;RelaunchProject=$RelaunchProject;
+ CallerProcessId=$CallerProcessId;CallerWindowHandle=$CallerWindowHandle}
+$path=Join-Path $InstallDir 'coordinator-options.jsonl'
+[IO.File]::AppendAllText($path,($record|ConvertTo-Json -Compress)+[Environment]::NewLine)
+if(@([IO.File]::ReadAllLines($path)).Count -eq 1){throw 'fixture retry'}
+$CoordinatorState.Stage='complete'
+'@
+    [IO.File]::WriteAllText($workerSource, $workerText)
+    $clickRetry = New-Object Windows.Forms.Timer
+    $clickRetry.Interval = 100
+    $clickRetry.Add_Tick({
+        foreach ($window in @([Windows.Forms.Application]::OpenForms)) {
+            if ($window.Text -cne 'SolderCAD Update') { continue }
+            foreach ($control in $window.Controls) {
+                if ($control -is [Windows.Forms.Button] -and $control.Text -ceq 'Retry' -and $control.Visible) { $control.PerformClick() }
+            }
+        }
+    })
+    $clickRetry.Start()
+    $optionExecutable = Join-Path $root 'app with spaces\kicad.exe'
+    $optionProject = Join-Path $root ('project ' + [char]0x03c0 + '.kicad_pro')
+    try {
+        Start-SolderCoordinator -ScriptPath $workerSource -InstallRoot $root -Executable $optionExecutable -Project $optionProject -CallerPid 4321 -CallerWindow 5678 -NoIntegration $true -Manage $true -RequireRecords $true -RequestedVersion '1.35.0' -RequestedSource 'GitHub'
+    } finally { $clickRetry.Stop(); $clickRetry.Dispose() }
+    $results=@([IO.File]::ReadAllLines((Join-Path $root 'coordinator-options.jsonl')) | ForEach-Object { $_ | ConvertFrom-Json })
+    Assert-Condition ($results.Count -eq 2) 'the coordinator did not retry its worker exactly once'
+    foreach ($result in $results) {
+        Assert-Condition ($result.Version -ceq '1.35.0' -and $result.DownloadSource -ceq 'GitHub' -and
+            $result.NoUserIntegration -and $result.ManageLauncher -and $result.RequireReopenRecords -and
+            $result.InternalCoordinator -and -not $result.InternalReopen -and $result.InstallDir -ceq $root -and
+            $result.InstallerScriptPath -ceq $workerSource -and $result.RelaunchExecutable -ceq $optionExecutable -and
+            $result.RelaunchProject -ceq $optionProject -and $result.CallerProcessId -eq 4321 -and $result.CallerWindowHandle -eq 5678) 'coordinator options changed across the event/runspace boundary'
+    }
     foreach ($relative in Get-SolderLaunchFiles) {
         $path = Join-Path $root $relative
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $path) | Out-Null
@@ -57,7 +104,8 @@ try {
     $helper2 = Save-SolderRepairLauncher $root $source
     Assert-Condition ($helper -ceq $helper2 -and (Test-SolderLaunchHealth $root)) 'refreshing the verified launch receipt failed'
     Write-SolderCoordinatorLog $root 'downloading' 'failure' 'GET https://example.invalid/path?token=secret-url Authorization: Bearer secret-header'
-    $log = [IO.File]::ReadAllText((Join-Path $root 'repair\update-log.jsonl'), [Text.Encoding]::UTF8)
+    $lines = [IO.File]::ReadAllLines((Join-Path $root 'repair\update-log.jsonl'), [Text.Encoding]::UTF8)
+    $log = $lines[$lines.Length - 1]
     $event = $log | ConvertFrom-Json
     Assert-Condition ($event.stage -ceq 'downloading' -and $event.outcome -ceq 'failure' -and
         -not $log.Contains('secret-url') -and -not $log.Contains('secret-header')) 'update diagnostics leaked secrets or lost their failure stage'
@@ -79,6 +127,14 @@ try {
     $link.TargetPath = Join-Path $env:SystemRoot 'system32\notepad.exe'
     $link.Save()
     Assert-Condition (-not (Test-SolderOwnedShortcut $other $root)) 'an unrelated shortcut was considered owned'
+    $unrelatedHash = Get-FileSha256 $other
+    Set-SolderManagedShortcut -ShortcutPath $other -InstallRoot $root -RepairScript $helper -Repair $false -OnlyOwned $true
+    Assert-Condition ((Get-FileSha256 $other) -ceq $unrelatedHash) 'an unrelated shortcut was replaced during a managed repair'
+    $oldShortcutHash = Get-FileSha256 $shortcutPath
+    $refused = $false
+    try { Set-SolderManagedShortcut -ShortcutPath $shortcutPath -InstallRoot $root -RepairScript ($helper + [char]0 + 'bad') -Repair $false }
+    catch { $refused = $true }
+    Assert-Condition ($refused -and (Get-FileSha256 $shortcutPath) -ceq $oldShortcutHash) 'a failed shortcut write changed the existing shortcut'
 
     # A loopback HTTP endpoint exercises the real streaming downloader and
     # cancellation while a response body is stalled, without external network.
