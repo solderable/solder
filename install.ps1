@@ -1100,9 +1100,59 @@ function Test-SolderProcessInstance {
 function Assert-SolderReopenSession {
     param([object]$State)
     if ($null -eq $State.Session -or
-        (Get-TargetIdentity $State.Session.Request $false) -cne $State.Session.RequestIdentity) {
+        (Get-TargetIdentity $State.Session.Request $false) -cne $State.Session.RequestIdentity -or
+        (Get-FileSha256 $State.Session.Request) -cne $State.Session.RequestHash) {
         Fail 'The update session changed unexpectedly. No further windows were closed; recovery records were preserved.'
     }
+}
+
+function Set-SolderSessionReopening {
+    param([object]$State, [scriptblock]$ReplaceOperation)
+    Assert-SolderReopenSession $State
+    $session = $State.Session
+    if ($session.Phase -ceq 'reopening') { return }
+    if ($session.Phase -cne 'closing') { Fail 'The update session phase could not be verified. Recovery records were preserved.' }
+    $record = [IO.File]::ReadAllText($session.Request, [Text.Encoding]::UTF8) | ConvertFrom-Json
+    if ($record.phase -cne 'closing' -or $record.nonce -cne $session.Nonce -or
+        $record.coordinatorPid -ne $session.CoordinatorPid -or $record.coordinatorStartTime -cne $session.CoordinatorStartTime) {
+        Fail 'The update session changed unexpectedly. Recovery records were preserved.'
+    }
+    $record.phase = 'reopening'
+    $content = $record | ConvertTo-Json -Compress
+    $replacement = $session.Request + '.' + [Guid]::NewGuid().ToString('N') + '.next'
+    $previous = $session.Request + '.' + [Guid]::NewGuid().ToString('N') + '.previous'
+    Write-TransactionRecord $replacement $content
+    $replacementIdentity = Get-TargetIdentity $replacement $false
+    $replacementHash = Get-FileSha256 $replacement
+    Assert-SolderReopenSession $State
+    # Validate the old backup before adopting a new identity. A concurrent
+    # replacement cannot silently become a fresh trusted session baseline.
+    $replaceError = $null
+    try {
+        # The shared ReplaceFile wrapper also restores the verified old file
+        # when Windows moves it to backup before reporting a partial failure.
+        Invoke-SolderShortcutReplace $replacement $session.Request $previous $session.RequestIdentity $session.RequestHash $ReplaceOperation 3>$null
+    } catch { $replaceError = $_ }
+    if ((Get-TargetIdentity $session.Request $false) -ceq $session.RequestIdentity -and
+        (Get-FileSha256 $session.Request) -ceq $session.RequestHash) {
+        # Nothing was published (or the shared wrapper restored the old file).
+        # Keep the original authority so the next Retry can try again.
+        if ((Get-TargetIdentity $replacement $false) -ceq $replacementIdentity -and
+            (Get-FileSha256 $replacement) -ceq $replacementHash) { [IO.File]::Delete($replacement) }
+        if ($null -ne $replaceError) { throw $replaceError }
+        Fail 'The update session phase was not published. Choose Retry to continue restoring windows.'
+    }
+    if ((Get-TargetIdentity $previous $false) -cne $session.RequestIdentity -or
+        (Get-FileSha256 $previous) -cne $session.RequestHash -or
+        (Get-TargetIdentity $session.Request $false) -cne $replacementIdentity -or
+        (Get-FileSha256 $session.Request) -cne $replacementHash) {
+        Fail 'The update session changed while restoring windows. Recovery records were preserved.'
+    }
+    $session.RequestIdentity = $replacementIdentity
+    $session.RequestHash = $replacementHash
+    $session.Phase = 'reopening'
+    try { [IO.File]::Delete($previous) }
+    catch { Write-Warning 'A verified previous update phase was preserved.' }
 }
 
 function New-SolderReopenSession {
@@ -1113,7 +1163,8 @@ function New-SolderReopenSession {
         try {
             $previous = Get-Content -LiteralPath $request -Raw | ConvertFrom-Json
             if ($previous.schemaVersion -ne 1 -or $previous.component -cne 'soldercad-update' -or
-                $previous.nonce -cnotmatch '\A[0-9a-f]{32}\z' -or $previous.coordinatorStartTime -cnotmatch '\A[0-9]+\z') { throw 'invalid' }
+                $previous.nonce -cnotmatch '\A[0-9a-f]{32}\z' -or $previous.coordinatorStartTime -cnotmatch '\A[0-9]+\z' -or
+                $previous.phase -cnotin @('closing', 'reopening')) { throw 'invalid' }
             $previousProcess = Get-Process -Id ([int]$previous.coordinatorPid) -ErrorAction SilentlyContinue
             if ($null -ne $previousProcess -and $previousProcess.StartTime.ToUniversalTime().ToFileTimeUtc().ToString() -ceq $previous.coordinatorStartTime) {
                 Fail 'Another SolderCAD update is already closing windows. Wait for it to finish.'
@@ -1129,12 +1180,15 @@ function New-SolderReopenSession {
     $nonce = [Guid]::NewGuid().ToString('N')
     $directory = Join-Path $InstallRoot ('.solder-update-reopen-' + $nonce)
     New-Item -ItemType Directory -Path $directory | Out-Null
+    $started = [Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().ToFileTimeUtc().ToString()
     $record = [ordered]@{ schemaVersion=1; component='soldercad-update'; nonce=$nonce; coordinatorPid=$PID;
-                          coordinatorStartTime=([Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().ToFileTimeUtc().ToString()) } | ConvertTo-Json -Compress
+                          coordinatorStartTime=$started; phase='closing' } | ConvertTo-Json -Compress
     try { Write-TransactionRecord -Path $request -Content $record }
     catch { [IO.Directory]::Delete($directory); throw }
     $State.Session = [pscustomobject]@{ Nonce=$nonce; InstallRoot=$InstallRoot; Directory=$directory; Request=$request;
-        RequestIdentity=(Get-TargetIdentity $request $false); RequireNative=$RequireNative; Processes=@(); CliProcesses=(New-Object 'System.Collections.Generic.List[object]'); Windows=(New-Object 'System.Collections.Generic.List[object]');
+        RequestIdentity=(Get-TargetIdentity $request $false); RequestHash=(Get-FileSha256 $request);
+        CoordinatorPid=$PID; CoordinatorStartTime=$started; Phase='closing';
+        RequireNative=$RequireNative; Processes=@(); CliProcesses=(New-Object 'System.Collections.Generic.List[object]'); Windows=(New-Object 'System.Collections.Generic.List[object]');
         Opened=(New-Object 'System.Collections.Generic.HashSet[string]'); RecordIdentities=@{}; RecordHashes=@{}; Managers=@{}; Standalones=@{};
         MailboxIdentities=@{}; Mailboxes=@{}; ReopenAttempts=@{} }
 }
@@ -1529,6 +1583,7 @@ function Open-SolderReopenSession {
     param([string]$InstallRoot, [object]$State, [string]$CallerProject, [int]$CallerPid, [bool]$Required)
     if ($null -eq $State.Session) { return }
     Assert-OrdinaryTarget $State.Session.Directory $true
+    Set-SolderSessionReopening $State
     Remove-SolderExitedReopenTargets $State $CallerPid
     foreach ($file in @(Get-ChildItem -LiteralPath $State.Session.Directory -File -Force -Filter '*.json')) {
         if ($file.Name -cmatch '\Acli-[0-9]+\.json\z') { continue }
@@ -1636,9 +1691,7 @@ function Complete-SolderReopenSession {
     param([object]$State)
     if ($null -eq $State.Session) { return }
     $session = $State.Session
-    if ((Get-TargetIdentity $session.Request $false) -cne $session.RequestIdentity) {
-        Fail 'The update session changed unexpectedly. Recovery files were preserved.'
-    }
+    Assert-SolderReopenSession $State
     foreach ($path in @($session.RecordIdentities.Keys)) {
         try {
             if ($session.Opened.Contains($path) -and (Get-TargetIdentity $path $false) -ceq $session.RecordIdentities[$path] -and
@@ -1770,7 +1823,8 @@ function Assert-SolderStagedReopenCapability {
                 ($capability.windowsUpdateCloseProtocol -is [int] -or $capability.windowsUpdateCloseProtocol -is [long]) -and $capability.windowsUpdateCloseProtocol -eq 2 -and
                 ($capability.windowsManagerReopenProtocol -is [int] -or $capability.windowsManagerReopenProtocol -is [long]) -and $capability.windowsManagerReopenProtocol -eq 1
             $valid = $valid -and
-                ($capability.windowsStandaloneReopenProtocol -is [int] -or $capability.windowsStandaloneReopenProtocol -is [long]) -and $capability.windowsStandaloneReopenProtocol -eq 1
+                ($capability.windowsStandaloneReopenProtocol -is [int] -or $capability.windowsStandaloneReopenProtocol -is [long]) -and $capability.windowsStandaloneReopenProtocol -eq 1 -and
+                ($capability.windowsUpdateSessionPhaseProtocol -is [int] -or $capability.windowsUpdateSessionPhaseProtocol -is [long]) -and $capability.windowsUpdateSessionPhaseProtocol -eq 1
         }
     } catch { $valid = $false }
     if (-not $valid) {
@@ -1845,6 +1899,8 @@ function Assert-SolderStagedCliForRunningSessions {
 function Close-SolderForUpdate {
     param([string]$InstallRoot, [object]$State, [int]$CallerPid, [long]$CallerWindow, [object]$Held, [string]$StagedApp, [bool]$CliRestoreSupported)
     Initialize-SolderWindowApi
+    Assert-SolderReopenSession $State
+    if ($State.Session.Phase -cne 'closing') { Fail 'A recovery session cannot close additional windows. Choose Retry to continue restoring them.' }
     if ($State.CallerReopened) { $CallerPid = 0; $CallerWindow = 0 }
     $processes = @(Get-SolderGuiProcesses $InstallRoot)
     $State.Session.Processes = $processes

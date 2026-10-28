@@ -35,6 +35,65 @@ New-Item -ItemType Directory -Path $root | Out-Null
 $children = New-Object 'System.Collections.Generic.List[System.Diagnostics.Process]'
 try {
     $root = Resolve-PhysicalPath $root
+    # The close marker becomes a reopen-only marker before launching any
+    # restored window. Retry must preserve that exact trusted replacement.
+    $phaseState=New-State
+    New-SolderReopenSession $root $phaseState $true
+    $initialRequest=[IO.File]::ReadAllText($phaseState.Session.Request)|ConvertFrom-Json
+    Assert-Condition ($initialRequest.phase -ceq 'closing') 'a new update was not in its closing phase'
+    Open-SolderReopenSession $root $phaseState '' 0 $true
+    $reopenRequest=[IO.File]::ReadAllText($phaseState.Session.Request)|ConvertFrom-Json
+    $reopenIdentity=$phaseState.Session.RequestIdentity
+    Assert-Condition ($reopenRequest.phase -ceq 'reopening' -and $reopenRequest.nonce -ceq $initialRequest.nonce -and
+        $reopenRequest.coordinatorPid -eq $initialRequest.coordinatorPid -and $reopenRequest.coordinatorStartTime -ceq $initialRequest.coordinatorStartTime) 'the reopening transition changed coordinator authority'
+    Open-SolderReopenSession $root $phaseState '' 0 $true
+    Assert-Condition ($phaseState.Session.RequestIdentity -ceq $reopenIdentity) 'recovery Retry rewrote its trusted phase marker'
+    $refused=$false
+    try { Close-SolderForUpdate $root $phaseState 0 0 } catch {$refused=$true}
+    Assert-Condition $refused 'a reopening session could close more windows'
+    Complete-SolderReopenSession $phaseState
+    $phaseState=New-State
+    New-SolderReopenSession $root $phaseState $true
+    $originalMarker=[IO.File]::ReadAllText($phaseState.Session.Request)
+    [IO.File]::WriteAllText($phaseState.Session.Request,$originalMarker.Replace('"closing"','"foreign"'))
+    $refused=$false
+    try { Set-SolderSessionReopening $phaseState } catch {$refused=$true}
+    Assert-Condition ($refused -and ([IO.File]::ReadAllText($phaseState.Session.Request)).Contains('"foreign"')) 'an in-place marker change became a trusted phase baseline'
+    [IO.File]::WriteAllText($phaseState.Session.Request,$originalMarker)
+    Complete-SolderReopenSession $phaseState
+    foreach ($mode in @('before-replace', 'after-backup', 'after-publish', 'foreign')) {
+        $phaseState=New-State
+        New-SolderReopenSession $root $phaseState $true
+        $oldIdentity=$phaseState.Session.RequestIdentity
+        $script:phaseReplacementMode=$mode
+        $replaceFailure={param($source,$target,$backup)
+            if($script:phaseReplacementMode -ceq 'before-replace'){throw 'fixture phase replace failure'}
+            [IO.File]::Move($target,$backup)
+            if($script:phaseReplacementMode -ceq 'after-publish'){[IO.File]::Move($source,$target)}
+            if($script:phaseReplacementMode -ceq 'foreign'){[IO.File]::WriteAllText($target,'foreign phase')}
+            throw 'fixture phase replace failure'
+        }
+        $refused=$false
+        try { Set-SolderSessionReopening $phaseState $replaceFailure } catch {$refused=$true}
+        if($mode -ceq 'after-publish'){
+            Assert-Condition (-not $refused -and $phaseState.Session.Phase -ceq 'reopening' -and
+                $phaseState.Session.RequestIdentity -cne $oldIdentity) 'a verified published phase was lost after a reported ReplaceFile failure'
+        } elseif($mode -ceq 'foreign') {
+            Assert-Condition ($refused -and ([IO.File]::ReadAllText($phaseState.Session.Request)) -ceq 'foreign phase' -and
+                $phaseState.Session.Phase -ceq 'closing') 'a foreign phase marker was overwritten or adopted'
+            $backup=@(Get-ChildItem -LiteralPath $root -File -Filter '.solder-update-reopen-request.json.*.previous' | Where-Object {
+                (Get-TargetIdentity $_.FullName $false) -ceq $oldIdentity
+            })
+            Assert-Condition ($backup.Count -eq 1) 'the verified original phase backup was lost'
+            [IO.File]::Delete($phaseState.Session.Request)
+            [IO.File]::Move($backup[0].FullName,$phaseState.Session.Request)
+        } else {
+            Assert-Condition ($refused -and $phaseState.Session.Phase -ceq 'closing' -and
+                (Get-TargetIdentity $phaseState.Session.Request $false) -ceq $oldIdentity) 'an unpublished phase could not be retried with its original authority'
+        }
+        Set-SolderSessionReopening $phaseState
+        Complete-SolderReopenSession $phaseState
+    }
     # The real Windows Forms event and background PowerShell runspace must
     # retain every caller option, including when the user chooses Retry.
     Add-Type -AssemblyName System.Windows.Forms
@@ -465,7 +524,7 @@ public class GuiFixture {
     $stagedApp=Join-Path $root 'SolderCAD'
     $capabilityPath=Join-Path $stagedApp 'share\kicad\resources\solder_chat\windows-update-capabilities.json'
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $capabilityPath) | Out-Null
-    $capability='{"schemaVersion":1,"component":"soldercad","windowsUpdateCloseProtocol":2,"windowsManagerReopenProtocol":1,"windowsStandaloneReopenProtocol":1}'
+    $capability='{"schemaVersion":1,"component":"soldercad","windowsUpdateCloseProtocol":2,"windowsManagerReopenProtocol":1,"windowsStandaloneReopenProtocol":1,"windowsUpdateSessionPhaseProtocol":1}'
     [IO.File]::WriteAllText($capabilityPath, $capability)
     $project = Join-Path $root ("saved project " + [char]0x03c0 + "'s.kicad_pro")
     New-Item -ItemType File -Path $project | Out-Null
@@ -484,7 +543,8 @@ public class GuiFixture {
     Wait-For { $late.Refresh(); $late.MainWindowHandle -ne 0 } 'the late window fixture did not start'
     foreach($badCapability in @('', '{"schemaVersion":1,"component":"soldercad","windowsUpdateCloseProtocol":"2","windowsManagerReopenProtocol":1}',
         '{"schemaVersion":1,"component":"soldercad","windowsUpdateCloseProtocol":2,"windowsManagerReopenProtocol":2}',
-        '{"schemaVersion":1,"component":"soldercad","windowsUpdateCloseProtocol":2,"windowsManagerReopenProtocol":1}')) {
+        '{"schemaVersion":1,"component":"soldercad","windowsUpdateCloseProtocol":2,"windowsManagerReopenProtocol":1}',
+        '{"schemaVersion":1,"component":"soldercad","windowsUpdateCloseProtocol":2,"windowsManagerReopenProtocol":1,"windowsStandaloneReopenProtocol":1}')) {
         if ($badCapability) { [IO.File]::WriteAllText($capabilityPath, $badCapability) }
         else { Remove-Item -LiteralPath $capabilityPath -ErrorAction SilentlyContinue }
         $refused=$false
@@ -787,6 +847,7 @@ public class GuiFixture {
     $window=@($state.Session.Windows | Where-Object {$_.Process.Id -eq $standalone.Id -and $_.Handle -eq $standaloneHandle})[0]
     $entry=Get-SolderReopenEntry $state.Session $window '' 0 $true
     $target=Get-SolderStandaloneReopenTarget $root $state $window $entry 0
+    Set-SolderSessionReopening $state
     $firstStandaloneId=$target.Process.Id
     $failed=$false
     try { Invoke-SolderManagerReopen $state $window $entry $target 500 } catch {$failed=$true}
@@ -886,6 +947,7 @@ public class GuiFixture {
     $readyFile=Join-Path $root 'manager-ready'
     $env:SOLDER_TEST_MANAGER_READY_FILE=$readyFile
     $hint="$($state.Session.Nonce):$($manager.Id):$managerHandle"
+    Set-SolderSessionReopening $state
     try { $starting=Start-SolderGuiProcess $gui ([IO.Path]::GetDirectoryName($gui)) $project $false $hint }
     finally { Remove-Item Env:SOLDER_TEST_MANAGER_READY_FILE -ErrorAction SilentlyContinue }
     $children.Add($starting)
