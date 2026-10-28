@@ -50,6 +50,10 @@ try {
     Remove-Item $resource
     Assert-Condition (-not (Test-SolderLaunchHealth $root)) 'a missing GUI resource was not detected'
     [IO.File]::WriteAllText($resource, 'fixture-data')
+    $metadata = Join-Path $root 'SolderCAD\share\kicad\resources\solder_chat\solder-release.json'
+    [IO.File]::WriteAllText($metadata, 'fixture-DATA')
+    Assert-Condition (-not (Test-SolderLaunchHealth $root)) 'damaged release metadata was not detected'
+    [IO.File]::WriteAllText($metadata, 'fixture-data')
     $helper2 = Save-SolderRepairLauncher $root $source
     Assert-Condition ($helper -ceq $helper2 -and (Test-SolderLaunchHealth $root)) 'refreshing the verified launch receipt failed'
     Write-SolderCoordinatorLog $root 'downloading' 'failure' 'GET https://example.invalid/path?token=secret-url Authorization: Bearer secret-header'

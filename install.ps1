@@ -1474,7 +1474,8 @@ function Get-SolderLaunchFiles {
         'SolderCAD\share\kicad\resources\solder_chat\app.js',
         'SolderCAD\share\kicad\resources\solder_chat\shell.js',
         'SolderCAD\share\kicad\resources\solder_chat\runtime.js',
-        'SolderCAD\share\kicad\resources\solder_chat\manifest.json'
+        'SolderCAD\share\kicad\resources\solder_chat\manifest.json',
+        'SolderCAD\share\kicad\resources\solder_chat\solder-release.json'
     )
 }
 

@@ -113,6 +113,12 @@ try {
             try { Assert-NoImplicitDowngrade ([pscustomobject]@{App='1.37.0';Cli='1.35.0'}) '1.36.0' } catch { $failed = $true }
             Assert-Condition $failed 'a newer installed app would be downgraded'
             Assert-NoImplicitDowngrade ([pscustomobject]@{App=$null;Cli='1.35.0'}) '1.36.0'
+            Set-Content -LiteralPath (Join-Path $resources 'solder-release.json') -Value '{bad json'
+            $versions = Get-InstalledVersions $root
+            Assert-Condition ($null -eq $versions.App -and $versions.Cli -ceq '1.37.0-dev+build') 'a damaged app marker hid the installed CLI version'
+            $failed = $false
+            try { Assert-NoImplicitDowngrade $versions '1.36.0' } catch { $failed = $true }
+            Assert-Condition $failed 'a damaged app marker allowed a known newer CLI to be downgraded'
         }
         'long-archive-path' {
             Add-Type -AssemblyName System.IO.Compression
