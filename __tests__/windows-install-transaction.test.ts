@@ -9,6 +9,8 @@ import { join } from "node:path";
 if (process.platform === "win32") {
   const scenarios: Record<string, string> = {
     "only one installer owns the shared lease": "lease",
+    "recovers when verification is interrupted with its executable still open": "interrupted-verifier",
+    "refuses known component downgrades while allowing unknown versions": "downgrade-policy",
     "extracts archive entries beyond the Windows path limit": "long-archive-path",
     "rejects traversal, reserved names, and duplicate ZIP paths before extraction": "unsafe-archive",
     "validates and extracts the same ZIP name when a Unicode extra field differs": "unicode-extra-field",
@@ -17,7 +19,10 @@ if (process.platform === "win32") {
     "restores the old pair when a locked CLI stops publication": "locked-cli-rollback",
     "recovers an interrupted publication and preserves the partial payload": "interrupted-publication",
     "refuses to replace an unrelated path during recovery": "foreign-target",
+    "refuses to consume an unrelated backup during recovery": "foreign-backup",
+    "restores the previous installation after interruption at every move": "interrupted-move-sequence",
     "keeps both new components after a committed publication": "completed-publication",
+    "preserves backups when a committed component is missing or replaced": "committed-target-changed",
     "keeps recovery records intact if cleanup encounters a locked file": "locked-cleanup",
     "rejects a binary directory junction": "linked-bin",
     "refuses an open target without terminating it": "running-app",

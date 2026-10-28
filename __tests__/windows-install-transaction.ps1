@@ -43,7 +43,7 @@ function Start-TestJournal([string]$Root) {
         token = $token
         oldApp = Get-TargetIdentity (Join-Path $Root 'SolderCAD') $true
         oldCli = Get-TargetIdentity (Join-Path $Root 'bin\solder.exe') $false
-        oldSidecar = $null
+        oldSidecar = Get-TargetIdentity (Join-Path $Root 'bin\SolderCAD') $true
         newApp = Get-TargetIdentity (Join-Path $payload 'SolderCAD') $true
         newCli = Get-TargetIdentity (Join-Path $payload 'solder.exe') $false
     } | ConvertTo-Json -Compress
@@ -62,6 +62,41 @@ try {
                 $ports = @($owner.Listeners | ForEach-Object { $_.LocalEndpoint.Port })
                 Write-Output ("PORTS=" + ($ports -join ','))
             } finally { $owner.Stop() }
+        }
+        'interrupted-verifier' {
+            $tx = Join-Path $root '.solder-installer-transaction'
+            New-Item -ItemType Directory $tx | Out-Null
+            Write-TransactionRecord (Join-Path $tx 'owner') 'solder-installer-transaction-v1'
+            Set-Content (Join-Path $tx 'unexecuted-payload.txt') 'safe'
+            $verifier = Join-Path $root '.solder-installer-verified-0123456789abcdef0123456789abcdef.exe'
+            Add-Type -OutputAssembly $verifier -OutputType ConsoleApplication -TypeDefinition 'public class VerifierFixture { public static void Main() { System.Threading.Thread.Sleep(120000); } }'
+            $child = Start-Process -FilePath $verifier -WindowStyle Hidden -PassThru
+            try {
+                Assert-SolderProcessesClosed $root
+                Recover-SolderTransaction $root
+                Assert-Condition (-not (Test-Path $tx)) 'an active verifier blocked transaction recovery'
+                Assert-Condition (Test-Path $verifier) 'the verifier was not preserved'
+                Assert-Condition (-not $child.HasExited) 'recovery closed the verifier process'
+            } finally { Stop-Process -Id $child.Id -Force -ErrorAction SilentlyContinue }
+        }
+        'downgrade-policy' {
+            $app = Join-Path $root 'SolderCAD'
+            $bin = Join-Path $root 'bin'
+            $resources = Join-Path $app 'share\kicad\resources\solder_chat'
+            New-Item -ItemType Directory -Force $resources, $bin | Out-Null
+            Set-Content -LiteralPath (Join-Path $resources 'solder-release.json') -Value '{"schemaVersion":1,"component":"soldercad","version":"1.35.0"}'
+            $cli = Join-Path $bin 'solder.exe'
+            Add-Type -OutputAssembly $cli -OutputType ConsoleApplication -TypeDefinition 'public class VersionProbe { public static void Main() { System.Console.WriteLine("solder v1.37.0"); } }'
+            $versions = Get-InstalledVersions $root
+            Assert-Condition ($versions.App -ceq '1.35.0') 'the installed app version was not detected'
+            Assert-Condition ($versions.Cli -ceq '1.37.0') 'the installed CLI version was not detected'
+            $failed = $false
+            try { Assert-NoImplicitDowngrade $versions '1.36.0' } catch { $failed = $true }
+            Assert-Condition $failed 'a newer installed CLI would be downgraded'
+            $failed = $false
+            try { Assert-NoImplicitDowngrade ([pscustomobject]@{App='1.37.0';Cli='1.35.0'}) '1.36.0' } catch { $failed = $true }
+            Assert-Condition $failed 'a newer installed app would be downgraded'
+            Assert-NoImplicitDowngrade ([pscustomobject]@{App=$null;Cli='1.35.0'}) '1.36.0'
         }
         'long-archive-path' {
             Add-Type -AssemblyName System.IO.Compression
@@ -138,7 +173,9 @@ try {
                 try { $writer.Write('{"schemaVersion":1,"component":"soldercad","version":"1.36.0"}') }
                 finally { $writer.Dispose() }
             } finally { $archive.Dispose() }
-            $hash = (Get-FileHash -LiteralPath $fixtureZip -Algorithm SHA256).Hash.ToLowerInvariant()
+            $sha = [Security.Cryptography.SHA256]::Create()
+            try { $hash = ([BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes($fixtureZip)))).Replace('-', '').ToLowerInvariant() }
+            finally { $sha.Dispose() }
             $fixtureRelease = [pscustomobject]@{
                 tag_name = '1.36.0'; draft = $false; body = ''
                 assets = @([pscustomobject]@{
@@ -165,7 +202,7 @@ try {
             Assert-Condition ((Get-Content (Join-Path $testInstall 'bin\solder.exe') -Raw).Trim() -ceq 'old cli') 'old CLI was changed'
             Assert-Condition ((Get-Content (Join-Path $testInstall 'SolderCAD\old.txt') -Raw).Trim() -ceq 'old app') 'old app was changed'
             Assert-Condition (-not (Test-Path (Join-Path $testInstall '.solder-installer-transaction'))) 'failed validation left a blocking transaction'
-            $unpublished = @(Get-ChildItem -LiteralPath $testInstall -File -Filter '.solder-installer-unpublished-*.exe')
+            $unpublished = @(Get-ChildItem -LiteralPath $testInstall -File -Filter '.solder-installer-verified-*.exe')
             Assert-Condition ($unpublished.Count -eq 1) 'the executed unpublished CLI was not preserved'
         }
         'lease' {
@@ -225,6 +262,41 @@ try {
             Assert-Condition ((Get-Content (Join-Path $root 'SolderCAD\foreign.txt') -Raw).Trim() -ceq 'user data') 'unrelated data was modified'
             Assert-Condition (Test-Path (Join-Path $paths.backupApp 'old.txt')) 'the original backup was lost'
         }
+        'foreign-backup' {
+            New-TestFixture $root
+            $paths = Start-TestJournal $root
+            [IO.Directory]::Move((Join-Path $root 'SolderCAD'), $paths.backupApp)
+            [IO.Directory]::Move($paths.backupApp, (Join-Path $root 'saved-original'))
+            New-Item -ItemType Directory $paths.backupApp | Out-Null
+            Set-Content (Join-Path $paths.backupApp 'foreign.txt') 'foreign data'
+            $failed = $false
+            try { Recover-SolderTransaction $root } catch { $failed = $true }
+            Assert-Condition $failed 'recovery accepted an unrelated backup'
+            Assert-Condition ((Get-Content (Join-Path $paths.backupApp 'foreign.txt') -Raw).Trim() -ceq 'foreign data') 'unrelated backup was modified'
+            Assert-Condition (Test-Path (Join-Path $root 'saved-original\old.txt')) 'the original app was lost'
+        }
+        'interrupted-move-sequence' {
+            # Every prefix of the actual five moves represents a possible crash.
+            for ($phase = 0; $phase -le 5; $phase++) {
+                $caseRoot = Join-Path $root ("phase-" + $phase)
+                New-Item -ItemType Directory $caseRoot | Out-Null
+                New-TestFixture $caseRoot
+                New-Item -ItemType Directory (Join-Path $caseRoot 'bin\SolderCAD') | Out-Null
+                Set-Content (Join-Path $caseRoot 'bin\SolderCAD\old.txt') 'old sidecar'
+                $paths = Start-TestJournal $caseRoot
+                $tx = Join-Path $caseRoot '.solder-installer-transaction'
+                if ($phase -ge 1) { [IO.Directory]::Move((Join-Path $caseRoot 'SolderCAD'), $paths.backupApp) }
+                if ($phase -ge 2) { [IO.File]::Move((Join-Path $caseRoot 'bin\solder.exe'), $paths.backupCli) }
+                if ($phase -ge 3) { [IO.Directory]::Move((Join-Path $caseRoot 'bin\SolderCAD'), $paths.backupSidecar) }
+                if ($phase -ge 4) { [IO.Directory]::Move((Join-Path $tx 'payload\SolderCAD'), (Join-Path $caseRoot 'SolderCAD')) }
+                if ($phase -ge 5) { [IO.File]::Move((Join-Path $tx 'payload\solder.exe'), (Join-Path $caseRoot 'bin\solder.exe')) }
+                Recover-SolderTransaction $caseRoot
+                Assert-Condition ((Get-Content (Join-Path $caseRoot 'SolderCAD\old.txt') -Raw).Trim() -ceq 'old app') "old app not restored at phase $phase"
+                Assert-Condition ((Get-Content (Join-Path $caseRoot 'bin\solder.exe') -Raw).Trim() -ceq 'old cli') "old CLI not restored at phase $phase"
+                Assert-Condition ((Get-Content (Join-Path $caseRoot 'bin\SolderCAD\old.txt') -Raw).Trim() -ceq 'old sidecar') "old sidecar not restored at phase $phase"
+                Assert-Condition (-not (Test-Path $tx)) "active transaction remained at phase $phase"
+            }
+        }
         'completed-publication' {
             New-TestFixture $root
             $app = Join-Path $root 'SolderCAD'
@@ -236,6 +308,34 @@ try {
             Assert-Condition ((Get-Content (Join-Path $app 'new.txt') -Raw).Trim() -ceq 'new app') 'new app was rolled back'
             Assert-Condition ((Get-Content $cli -Raw).Trim() -ceq 'new cli') 'new CLI was rolled back'
             Assert-Condition (-not (Test-Path $tx)) 'completed transaction was not cleaned'
+        }
+        'committed-target-changed' {
+            foreach ($mode in @('missing', 'foreign')) {
+                $caseRoot = Join-Path $root $mode
+                New-Item -ItemType Directory $caseRoot | Out-Null
+                New-TestFixture $caseRoot
+                $app = Join-Path $caseRoot 'SolderCAD'
+                $cli = Join-Path $caseRoot 'bin\solder.exe'
+                $tx = Join-Path $caseRoot '.solder-installer-transaction'
+                $original = @((Get-TargetIdentity $app $true), (Get-TargetIdentity $cli $false), $null)
+                Publish-SolderTransaction $caseRoot (Join-Path $tx 'payload') $original
+                $record = Get-Content (Join-Path $tx 'journal.json') -Raw | ConvertFrom-Json
+                $paths = Get-TransactionPaths $caseRoot $record.token
+                [IO.Directory]::Move($app, (Join-Path $caseRoot 'saved-new'))
+                if ($mode -eq 'foreign') {
+                    New-Item -ItemType Directory $app | Out-Null
+                    Set-Content (Join-Path $app 'foreign.txt') 'foreign data'
+                }
+                $failed = $false
+                try { Recover-SolderTransaction $caseRoot } catch { $failed = $true }
+                Assert-Condition $failed "cleanup accepted a $mode committed app"
+                Assert-Condition (Test-Path (Join-Path $paths.backupApp 'old.txt')) 'original app backup was removed'
+                Assert-Condition (Test-Path $paths.backupCli) 'original CLI backup was removed'
+                Assert-Condition (Test-Path (Join-Path $tx 'journal.json')) 'recovery journal was removed'
+                if ($mode -eq 'foreign') {
+                    Assert-Condition ((Get-Content (Join-Path $app 'foreign.txt') -Raw).Trim() -ceq 'foreign data') 'foreign data was modified'
+                }
+            }
         }
         'locked-cleanup' {
             New-TestFixture $root

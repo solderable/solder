@@ -67,6 +67,10 @@ over an existing copy, save your work and close its SolderCAD windows, editors,
 and Solder terminals. The installer never closes them for you. It verifies and
 stages both components before replacing either; if installation is interrupted,
 run the installer again to recover the previous installation.
+The default latest-release installation refuses to replace a known newer
+component. When an installed component's version cannot be determined, it warns
+that the selected release will replace it. An explicit `-Version` deliberately
+selects that version, including an older one.
 
 To repair a custom installation without changing the current user's environment
 variables or desktop shortcut, specify its install directory and use

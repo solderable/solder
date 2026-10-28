@@ -149,24 +149,29 @@ function Resolve-ReleaseDownload {
     return [pscustomobject]@{ Version = $tag; CliVersion = $cliVersion; AssetName = $name; DownloadUrl = $url; Size = $size; Sha256 = $digest.Substring(7).ToLowerInvariant(); Source = $resolvedSource }
 }
 
-function Assert-ArchiveIntegrity {
-    param([string]$ArchivePath, $Download)
-    if ((Get-Item -LiteralPath $ArchivePath).Length -ne $Download.Size) {
-        Fail "downloaded archive size does not match the GitHub release asset"
-    }
+function Get-FileSha256 {
+    param([string]$Path)
     # Stream through .NET so this also works when PowerShell 5.1 is launched
     # from a host whose PSModulePath does not expose Get-FileHash.
     $sha256 = [System.Security.Cryptography.SHA256]::Create()
     $stream = $null
     try {
-        $stream = [System.IO.File]::OpenRead($ArchivePath)
+        $stream = [System.IO.File]::OpenRead($Path)
         $actualHash = [BitConverter]::ToString($sha256.ComputeHash($stream)).Replace("-", "")
     }
     finally {
         if ($null -ne $stream) { $stream.Dispose() }
         $sha256.Dispose()
     }
-    if ($actualHash -ine $Download.Sha256) {
+    return $actualHash
+}
+
+function Assert-ArchiveIntegrity {
+    param([string]$ArchivePath, $Download)
+    if ((Get-Item -LiteralPath $ArchivePath).Length -ne $Download.Size) {
+        Fail "downloaded archive size does not match the GitHub release asset"
+    }
+    if ((Get-FileSha256 $ArchivePath) -ine $Download.Sha256) {
         Fail "downloaded archive SHA-256 does not match the GitHub release asset"
     }
 }
@@ -372,6 +377,65 @@ function Get-TargetIdentity {
     return [SolderInstaller.NativePath]::Identity($Path)
 }
 
+function Get-InstalledVersions {
+    param([string]$InstallRoot)
+    $app = Join-Path $InstallRoot 'SolderCAD'
+    $cli = Join-Path $InstallRoot 'bin\solder.exe'
+    $appVersion = $null
+    $cliVersion = $null
+    $hasApp = Test-Path -LiteralPath $app -PathType Container
+    $hasCli = Test-Path -LiteralPath $cli -PathType Leaf
+    if ($hasApp) {
+        $metadata = Join-Path $app 'share\kicad\resources\solder_chat\solder-release.json'
+        try {
+            $data = Get-Content -LiteralPath $metadata -Raw -ErrorAction Stop | ConvertFrom-Json
+            if ($data.schemaVersion -eq 1 -and $data.component -ceq 'soldercad' -and
+                $data.version -is [string] -and $data.version -match '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
+                $appVersion = $data.version
+            }
+        } catch { }
+        if (-not $appVersion) { Write-Warning "The existing SolderCAD version is unknown. It will be replaced by the selected release." }
+    } elseif ($hasCli) {
+        Write-Warning "SolderCAD is missing. It will be installed from the selected release."
+    }
+    if ($hasCli) {
+        $probe = Join-Path ([IO.Path]::GetTempPath()) ('solder-version-probe-' + [Guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $probe | Out-Null
+        try {
+            $stdout = Join-Path $probe 'stdout'
+            $stderr = Join-Path $probe 'stderr'
+            $process = Start-Process -FilePath $cli -ArgumentList '--version' -NoNewWindow -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+            # Retain the process handle before it exits; otherwise Windows
+            # PowerShell 5.1 can report a null ExitCode for a fast child.
+            [void]$process.Handle
+            if (-not $process.WaitForExit(15000)) {
+                Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+                $process.WaitForExit()
+            } else {
+                $process.Refresh()
+                if ($process.ExitCode -ne 0) { throw 'The existing CLI version check failed.' }
+                $output = (Get-Content -LiteralPath $stdout -Raw).Trim()
+                if ($output -cmatch '^solder v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$') { $cliVersion = $Matches[1] }
+            }
+        } catch { }
+        finally { Remove-Item -LiteralPath $probe -Recurse -Force -ErrorAction SilentlyContinue }
+        if (-not $cliVersion) { Write-Warning "The existing Solder CLI version is unknown. It will be replaced by the selected release." }
+    } elseif ($hasApp) {
+        Write-Warning "The Solder CLI is missing. It will be installed from the selected release."
+    }
+    return [pscustomobject]@{ App = $appVersion; Cli = $cliVersion }
+}
+
+function Assert-NoImplicitDowngrade {
+    param([object]$Installed, [string]$Selected)
+    $target = [version](($Selected -replace '^v', '').Split('-')[0])
+    foreach ($component in @($Installed.App, $Installed.Cli)) {
+        if ($component -and [version]($component.Split('-')[0]) -gt $target) {
+            Fail "An installed component is newer than release $Selected. Nothing was changed. Specify -Version explicitly to install a different release."
+        }
+    }
+}
+
 function Write-TransactionRecord {
     param([string]$Path, [string]$Content)
     $temp = "$Path.tmp"
@@ -477,6 +541,12 @@ function Recover-SolderTransaction {
             if ((Get-Content -LiteralPath $committed -Raw) -cne 'committed-v1') {
                 Fail "The commit record at '$committed' is invalid. Recovery files were preserved."
             }
+            $currentApp = Get-TargetIdentity -Path (Join-Path $InstallRoot 'SolderCAD') -Directory $true
+            $currentCli = Get-TargetIdentity -Path (Join-Path $InstallRoot 'bin\solder.exe') -Directory $false
+            $currentSidecar = Get-TargetIdentity -Path (Join-Path $InstallRoot 'bin\SolderCAD') -Directory $true
+            if ($currentApp -cne $record.newApp -or $currentCli -cne $record.newCli -or $null -ne $currentSidecar) {
+                Fail "The committed Solder installation changed before cleanup. Recovery files were preserved."
+            }
             $isCommitted = $true
         } else {
             Write-Host "Restoring an interrupted Solder installation..."
@@ -512,7 +582,8 @@ function Recover-SolderTransaction {
 }
 
 function Publish-SolderTransaction {
-    param([string]$InstallRoot, [string]$PayloadRoot, [object[]]$Original)
+    param([string]$InstallRoot, [string]$PayloadRoot, [object[]]$Original, [string]$NewCliPath)
+    if (-not $NewCliPath) { $NewCliPath = Join-Path $PayloadRoot 'solder.exe' }
     $tx = Join-Path $InstallRoot '.solder-installer-transaction'
     $app = Join-Path $InstallRoot 'SolderCAD'
     $cli = Join-Path $InstallRoot 'bin\solder.exe'
@@ -524,7 +595,7 @@ function Publish-SolderTransaction {
     Assert-SolderProcessesClosed -InstallRoot $InstallRoot
     Assert-OrdinaryTarget -Path $PayloadRoot -Directory $true
     $newApp = Get-TargetIdentity (Join-Path $PayloadRoot 'SolderCAD') $true
-    $newCli = Get-TargetIdentity (Join-Path $PayloadRoot 'solder.exe') $false
+    $newCli = Get-TargetIdentity $NewCliPath $false
     if ($null -eq $newApp -or $null -eq $newCli) { Fail "The staged Solder installation is incomplete." }
     $token = [Guid]::NewGuid().ToString('N')
     $paths = Get-TransactionPaths -InstallRoot $InstallRoot -Token $token
@@ -537,7 +608,7 @@ function Publish-SolderTransaction {
     if ($null -ne $Original[1]) { [IO.File]::Move($cli, $paths.backupCli) }
     if ($null -ne $Original[2]) { [IO.Directory]::Move($sidecar, $paths.backupSidecar) }
     [IO.Directory]::Move((Join-Path $PayloadRoot 'SolderCAD'), $app)
-    [IO.File]::Move((Join-Path $PayloadRoot 'solder.exe'), $cli)
+    [IO.File]::Move($NewCliPath, $cli)
     Write-TransactionRecord -Path (Join-Path $tx 'committed') -Content 'committed-v1'
 }
 
@@ -696,6 +767,7 @@ function Resolve-ShortTempRoot {
 
 Assert-WindowsX64
 
+$explicitVersion = -not [string]::IsNullOrWhiteSpace($Version)
 $InstallDir = [IO.Path]::GetFullPath($InstallDir)
 $binDir = Join-Path $InstallDir "bin"
 $cliDestination = Join-Path $binDir "solder.exe"
@@ -775,10 +847,16 @@ try {
     foreach ($oldBackup in @(Get-ChildItem -LiteralPath $InstallDir -Force -Filter '.solder-installer-*-previous-*')) {
         Write-Warning "An earlier installer retained a previous component at '$($oldBackup.FullName)'. It will be preserved."
     }
+    foreach ($oldVerifier in @(Get-ChildItem -LiteralPath $InstallDir -File -Force -Filter '.solder-installer-verified-*.exe')) {
+        Write-Warning "An earlier installer retained an unpublished verifier at '$($oldVerifier.FullName)'. It will be preserved."
+    }
     $original = @((Get-TargetIdentity $solderCadDestination $true), (Get-TargetIdentity $cliDestination $false), (Get-TargetIdentity $oldSidecarSolderCadDestination $true))
 
     $download = Resolve-ReleaseDownload -RequestedVersion $Version -Source $DownloadSource
     $Version = $download.Version
+    if (-not $explicitVersion) {
+        Assert-NoImplicitDowngrade -Installed (Get-InstalledVersions $InstallDir) -Selected $Version
+    }
     $archivePath = Join-Path $tx $download.AssetName
     $extractDir = Join-Path $tx "extract"
     # Create the ownership marker before publishing the fixed recovery path.
@@ -793,16 +871,20 @@ try {
         throw
     }
 
-    $payloadCli = $null
-    $validationRan = $false
+    $verifiedCli = $null
     try {
         Write-Host "Downloading $($download.DownloadUrl)"
+        $previousProgress = $ProgressPreference
         try {
+            # Windows PowerShell 5.1's per-buffer progress rendering makes
+            # large downloads dramatically slower, especially under emulation.
+            $ProgressPreference = 'SilentlyContinue'
             Invoke-WebRequest -Uri $download.DownloadUrl -OutFile $archivePath -TimeoutSec 1800 -Headers @{ "User-Agent" = "solder-installer" }
         }
         catch {
             Fail "$($download.Source) download failed; no other source was tried. To use GitHub explicitly, rerun with -DownloadSource GitHub."
         }
+        finally { $ProgressPreference = $previousProgress }
 
         Write-Host "Verifying archive size and SHA-256..."
         Assert-ArchiveIntegrity -ArchivePath $archivePath -Download $download
@@ -827,10 +909,15 @@ try {
             Fail "archive missing SolderCAD\share\kicad"
         }
         Assert-SolderCadPythonRuntime -SolderCadPath $payloadSolderCad
-        # Publish the executable itself with a same-volume file rename. Do not
-        # rename its parent directory: Windows may hold the executed image open.
-        $validationRan = $true
-        $cliVersion = (& $payloadCli --version | Out-String).Trim()
+        # Verify and publish a byte-identical sibling outside the active
+        # transaction. A hard stop while the image is running cannot hold the
+        # recovery directory open, and publication uses a file rename.
+        $verifiedCli = Join-Path $InstallDir ('.solder-installer-verified-' + [Guid]::NewGuid().ToString('N') + '.exe')
+        [IO.File]::Copy($payloadCli, $verifiedCli)
+        if ((Get-FileSha256 $payloadCli) -cne (Get-FileSha256 $verifiedCli)) {
+            Fail "The staged Solder executable could not be verified."
+        }
+        $cliVersion = (& $verifiedCli --version | Out-String).Trim()
         if ($LASTEXITCODE -ne 0 -or $cliVersion -cne "solder v$($download.CliVersion)") {
             Fail "The downloaded Solder executable did not identify itself as v$($download.CliVersion)."
         }
@@ -848,18 +935,13 @@ try {
         }
 
         Write-Host "Installing Solder and SolderCAD together..."
-        Publish-SolderTransaction -InstallRoot $InstallDir -PayloadRoot $payloadRoot -Original $original
+        Publish-SolderTransaction -InstallRoot $InstallDir -PayloadRoot $payloadRoot -Original $original -NewCliPath $verifiedCli
     }
     catch {
         $installError = $_
         try {
-            # An executed image can temporarily prevent its parent directory
-            # from being renamed on Windows. If it has not been published, move
-            # that one owned file aside without deleting it before recovery.
-            if ($validationRan -and $payloadCli -and (Test-Path -LiteralPath $payloadCli -PathType Leaf)) {
-                $unpublished = Join-Path $InstallDir ('.solder-installer-unpublished-' + [Guid]::NewGuid().ToString('N') + '.exe')
-                [IO.File]::Move($payloadCli, $unpublished)
-                Write-Warning "The uninstalled verifier was preserved at '$unpublished'."
+            if ($verifiedCli -and (Test-Path -LiteralPath $verifiedCli -PathType Leaf)) {
+                Write-Warning "The uninstalled verifier was preserved at '$verifiedCli'."
             }
             Assert-SolderProcessesClosed -InstallRoot $InstallDir
             Recover-SolderTransaction -InstallRoot $InstallDir
@@ -870,7 +952,7 @@ try {
     }
 
     try { Recover-SolderTransaction -InstallRoot $InstallDir }
-    catch { Write-Warning "Solder was installed, but cleanup could not finish. Recovery files remain at $tx." }
+    catch { throw "Solder publication could not be verified. Recovery files remain at '$tx': $($_.Exception.Message)" }
 
     if (-not $NoUserIntegration) {
         try {
