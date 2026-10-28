@@ -390,7 +390,7 @@ function Get-InstalledVersions {
         try {
             $data = Get-Content -LiteralPath $metadata -Raw -ErrorAction Stop | ConvertFrom-Json
             if ($data.schemaVersion -eq 1 -and $data.component -ceq 'soldercad' -and
-                $data.version -is [string] -and $data.version -match '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
+                $data.version -is [string] -and $data.version -match '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$') {
                 $appVersion = $data.version
             }
         } catch { }
@@ -415,7 +415,7 @@ function Get-InstalledVersions {
                 $process.Refresh()
                 if ($process.ExitCode -ne 0) { throw 'The existing CLI version check failed.' }
                 $output = (Get-Content -LiteralPath $stdout -Raw).Trim()
-                if ($output -cmatch '^solder v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$') { $cliVersion = $Matches[1] }
+                if ($output -cmatch '^solder v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)$') { $cliVersion = $Matches[1] }
             }
         } catch { }
         finally { Remove-Item -LiteralPath $probe -Recurse -Force -ErrorAction SilentlyContinue }
@@ -430,8 +430,10 @@ function Assert-NoImplicitDowngrade {
     param([object]$Installed, [string]$Selected)
     $target = [version](($Selected -replace '^v', '').Split('-')[0])
     foreach ($component in @($Installed.App, $Installed.Cli)) {
-        if ($component -and [version]($component.Split('-')[0]) -gt $target) {
-            Fail "An installed component is newer than release $Selected. Nothing was changed. Specify -Version explicitly to install a different release."
+        if ($component -and $component -match '^(\d+\.\d+\.\d+)') {
+            if ([version]$Matches[1] -gt $target) {
+                Fail "An installed component is newer than release $Selected. Nothing was changed. Specify -Version explicitly to install a different release."
+            }
         }
     }
 }

@@ -84,12 +84,12 @@ try {
             $bin = Join-Path $root 'bin'
             $resources = Join-Path $app 'share\kicad\resources\solder_chat'
             New-Item -ItemType Directory -Force $resources, $bin | Out-Null
-            Set-Content -LiteralPath (Join-Path $resources 'solder-release.json') -Value '{"schemaVersion":1,"component":"soldercad","version":"1.35.0"}'
+            Set-Content -LiteralPath (Join-Path $resources 'solder-release.json') -Value '{"schemaVersion":1,"component":"soldercad","version":"1.35.0+build"}'
             $cli = Join-Path $bin 'solder.exe'
-            Add-Type -OutputAssembly $cli -OutputType ConsoleApplication -TypeDefinition 'public class VersionProbe { public static void Main() { System.Console.WriteLine("solder v1.37.0"); } }'
+            Add-Type -OutputAssembly $cli -OutputType ConsoleApplication -TypeDefinition 'public class VersionProbe { public static void Main() { System.Console.WriteLine("solder v1.37.0-dev+build"); } }'
             $versions = Get-InstalledVersions $root
-            Assert-Condition ($versions.App -ceq '1.35.0') 'the installed app version was not detected'
-            Assert-Condition ($versions.Cli -ceq '1.37.0') 'the installed CLI version was not detected'
+            Assert-Condition ($versions.App -ceq '1.35.0+build') 'the installed app version was not detected'
+            Assert-Condition ($versions.Cli -ceq '1.37.0-dev+build') 'the installed CLI version was not detected'
             $failed = $false
             try { Assert-NoImplicitDowngrade $versions '1.36.0' } catch { $failed = $true }
             Assert-Condition $failed 'a newer installed CLI would be downgraded'
