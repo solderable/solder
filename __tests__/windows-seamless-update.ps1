@@ -159,7 +159,7 @@ public class CooperativeFixture {
     Assert-Condition ($child.WaitForExit(5000)) 'a cooperative terminal was not closed'
     $env:SOLDER_TEST_CLI_OPENED = Join-Path $root 'cli-opened.txt'
     $board = Join-Path $root ('board ' + [char]0x03c0 + '.kicad_pcb')
-    [IO.File]::WriteAllText($board, 'board fixture')
+    New-Item -ItemType File -Path $board | Out-Null
     $cliRecord = [ordered]@{ schemaVersion=1; nonce=$state.Session.Nonce; pid=$child.Id; kind='cli'; executable=$cli;
         projectDir=$root; conversationId='saved_session-123'; url='wss://example.invalid/chat'; boardPath=$board } | ConvertTo-Json -Compress
     Write-TransactionRecord (Join-Path $state.Session.Directory ("cli-$($child.Id).json")) $cliRecord
@@ -266,7 +266,7 @@ public class GuiFixture {
     }
     $env:SOLDER_TEST_OPENED = Join-Path $root 'opened.txt'
     $project = Join-Path $root ("saved project " + [char]0x03c0 + "'s.kicad_pro")
-    [IO.File]::WriteAllText($project, 'project fixture')
+    New-Item -ItemType File -Path $project | Out-Null
 
     $legacy = Start-Process -FilePath $gui -ArgumentList 'legacy' -PassThru
     $children.Add($legacy)
@@ -341,7 +341,7 @@ public class GuiFixture {
     # hidden child frames; each is restored exactly once.
     Remove-Item $env:SOLDER_TEST_OPENED
     $saved2 = Join-Path $root 'other saved board.kicad_pcb'
-    [IO.File]::WriteAllText($saved2, 'board fixture')
+    New-Item -ItemType File -Path $saved2 | Out-Null
     $fixture = Start-Process -FilePath $gui -ArgumentList 'close' -PassThru
     $children.Add($fixture)
     Wait-For { $fixture.Refresh(); $fixture.MainWindowHandle -ne 0 } 'the save fixture window did not start'
