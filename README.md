@@ -66,10 +66,10 @@ The x64 release also runs under emulation on Windows 11 ARM64. An interactive
 update downloads and verifies both components while SolderCAD remains open. It
 then asks the open windows to close normally, so their usual Save and Cancel
 dialogs remain in control, and reopens saved documents after installation.
-Recent Solder terminal sessions can close cooperatively; older terminal
-sessions may need to be closed before retrying. No process is forcibly closed by
-the installer. Older SolderCAD releases may not report documents changed by
-Save As or other open windows, so check them after their first update.
+Recent Solder terminal sessions can close cooperatively. For older SolderCAD
+windows or terminal sessions that cannot prove their work is preserved, save and
+close them yourself before retrying. The installer does not forcibly close
+existing windows or sessions.
 If installation is interrupted, run the installer again to recover the previous
 installation. Noninteractive installations still require existing windows and
 terminal sessions to be closed before starting.

@@ -224,13 +224,21 @@ using System.IO;
 using System.Threading;
 using System.Windows.Forms;
 using System.Drawing;
+using System.Runtime.InteropServices;
 public class GuiFixture {
+ [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern bool SetPropW(IntPtr hwnd, string name, IntPtr value);
  [STAThread] public static void Main(string[] args) {
-  if (args.Length == 0 || (args[0] != "close" && args[0] != "veto" && args[0] != "delayed")) {
+  if (args.Length == 0 || (args[0] != "close" && args[0] != "veto" && args[0] != "delayed" && args[0] != "legacy" && args[0] != "owned")) {
    File.AppendAllText(Environment.GetEnvironmentVariable("SOLDER_TEST_OPENED"), Path.GetFileName(Application.ExecutablePath) + "|" + (args.Length == 0 ? "(empty)" : args[0]) + "\n"); return;
   }
   var f = new Form(); f.Text="Solder fixture"; f.StartPosition=FormStartPosition.Manual;
+  f.HandleCreated += (sender,e) => { if(args[0]!="legacy") SetPropW(f.Handle,"SolderCAD.UpdateCloseProtocol.v1",new IntPtr(1)); };
   f.Location=new Point(-3000,-3000); f.ShowInTaskbar=true;
+  if (args[0]=="owned") f.Shown += (sender,e) => {
+   var hidden = new Form(); hidden.Text="Hidden child";
+   hidden.HandleCreated += (s,a) => SetPropW(hidden.Handle,"SolderCAD.UpdateCloseProtocol.v1",new IntPtr(1));
+   hidden.Show(f); hidden.Hide();
+  };
   f.FormClosing += (sender,e) => { if(args[0]=="veto") e.Cancel=true; if(args[0]=="delayed") Thread.Sleep(1500); };
   Application.Run(f);
  }
@@ -245,6 +253,30 @@ public class GuiFixture {
     $env:SOLDER_TEST_OPENED = Join-Path $root 'opened.txt'
     $project = Join-Path $root ("saved project " + [char]0x03c0 + "'s.kicad_pro")
     [IO.File]::WriteAllText($project, 'project fixture')
+
+    $legacy = Start-Process -FilePath $gui -ArgumentList 'legacy' -PassThru
+    $children.Add($legacy)
+    Wait-For { $legacy.Refresh(); $legacy.MainWindowHandle -ne 0 } 'the legacy fixture window did not start'
+    $state = New-State
+    New-SolderReopenSession $root $state
+    $refused = $false
+    try { Close-SolderForUpdate $root $state $legacy.Id ([long]$legacy.MainWindowHandle) }
+    catch { $refused = $_.Exception.Message -like '*older SolderCAD window*' }
+    Assert-Condition ($refused -and -not $legacy.HasExited) 'an unprovable legacy window was closed'
+    Complete-SolderReopenSession $state
+    Stop-Process -Id $legacy.Id -Force
+    [void]$legacy.WaitForExit(5000)
+
+    $owned = Start-Process -FilePath $gui -ArgumentList 'owned' -PassThru
+    $children.Add($owned)
+    Initialize-SolderWindowApi
+    Wait-For { @([SolderInstaller.Windows]::CapableWindows($owned.Id)).Count -ge 2 } 'the hidden child fixture window did not start'
+    $state = New-State
+    New-SolderReopenSession $root $state
+    $owned.Refresh()
+    Close-SolderForUpdate $root $state $owned.Id ([long]$owned.MainWindowHandle)
+    Assert-Condition ($state.Session.Windows.Count -ge 2) 'an owned or hidden capable frame was not captured'
+    Complete-SolderReopenSession $state
 
     $veto = Start-Process -FilePath $gui -ArgumentList 'veto' -PassThru
     $children.Add($veto)
@@ -289,10 +321,14 @@ public class GuiFixture {
     $state = New-State
     New-SolderReopenSession $root $state
     Close-SolderForUpdate $root $state $fixture.Id $handle
+    $refused = $false
+    try { Assert-SolderClosedWindowRecords $state '' $fixture.Id } catch { $refused = $true }
+    Assert-Condition $refused 'publication would proceed without the closed-window record'
     foreach ($item in @(@{ hwnd=$handle; project=$project; frameType='manager' }, @{ hwnd=987654321; project=$saved2; frameType='pcb' }, @{ hwnd=987654320; project=''; frameType='schematic' })) {
         $record = [ordered]@{ schemaVersion=1; nonce=$state.Session.Nonce; pid=$fixture.Id; hwnd=[string]$item.hwnd; executable=$gui; project=$item.project; frameType=$item.frameType } | ConvertTo-Json -Compress
         Write-TransactionRecord (Join-Path $state.Session.Directory ("$($fixture.Id)-$($item.hwnd).json")) $record
     }
+    Assert-SolderClosedWindowRecords $state '' $fixture.Id
     Open-SolderReopenSession $root $state '' $fixture.Id $true
     Open-SolderReopenSession $root $state '' $fixture.Id $true
     $opened = @([IO.File]::ReadAllLines($env:SOLDER_TEST_OPENED))
