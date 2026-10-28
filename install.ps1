@@ -1135,7 +1135,7 @@ function New-SolderReopenSession {
     catch { [IO.Directory]::Delete($directory); throw }
     $State.Session = [pscustomobject]@{ Nonce=$nonce; InstallRoot=$InstallRoot; Directory=$directory; Request=$request;
         RequestIdentity=(Get-TargetIdentity $request $false); RequireNative=$RequireNative; Processes=@(); CliProcesses=(New-Object 'System.Collections.Generic.List[object]'); Windows=(New-Object 'System.Collections.Generic.List[object]');
-        Opened=(New-Object 'System.Collections.Generic.HashSet[string]'); RecordIdentities=@{}; RecordHashes=@{}; Managers=@{};
+        Opened=(New-Object 'System.Collections.Generic.HashSet[string]'); RecordIdentities=@{}; RecordHashes=@{}; Managers=@{}; Standalones=@{};
         MailboxIdentities=@{}; Mailboxes=@{}; ReopenAttempts=@{} }
 }
 
@@ -1310,11 +1310,12 @@ function Test-SolderManagerTarget {
            [SolderInstaller.Windows]::SupportsSafeClose($Target.Handle)
 }
 
-function Remove-SolderExitedManagers {
+function Remove-SolderExitedReopenTargets {
     param([object]$State, [int]$CallerPid)
     $session = $State.Session
-    foreach ($key in @($session.Managers.Keys)) {
-        $target = $session.Managers[$key]
+    foreach ($cache in @($session.Managers, $session.Standalones)) {
+      foreach ($key in @($cache.Keys)) {
+        $target = $cache[$key]
         $target.Process.Refresh()
         if (-not $target.Process.HasExited) { continue }
         foreach ($recordKey in $target.Keys) {
@@ -1326,27 +1327,28 @@ function Remove-SolderExitedManagers {
             }
         }
         $target.Process.Dispose()
-        [void]$session.Managers.Remove($key)
+        [void]$cache.Remove($key)
+      }
     }
 }
 
-function Wait-SolderManagerTarget {
+function Wait-SolderNativeReopenTarget {
     param([string]$InstallRoot, [object]$State, [string]$Key, [object]$ManagerWindow,
-          [object]$ManagerEntry, [int]$CallerPid, [int]$TimeoutMs = 30000)
+          [object]$ManagerEntry, [int]$CallerPid, [int]$TimeoutMs = 30000, [object]$Target = $null)
     $session = $State.Session
-    $target = $session.Managers[$Key]
+    $target = if ($null -ne $Target) { $Target } else { $session.Managers[$Key] }
     $process = $target.Process
     $deadline = [Diagnostics.Stopwatch]::StartNew()
     while ($deadline.ElapsedMilliseconds -lt $TimeoutMs) {
         Assert-SolderReopenSession $State
         if ((Get-TargetIdentity $ManagerEntry.Key $false) -cne $session.RecordIdentities[$ManagerEntry.Key] -or
             (Get-FileSha256 $ManagerEntry.Key) -cne $session.RecordHashes[$ManagerEntry.Key]) {
-            Fail 'A SolderCAD manager record changed. Recovery records were preserved.'
+            Fail 'A SolderCAD window record changed. Recovery records were preserved.'
         }
         $process.Refresh()
         if ($process.HasExited) {
-            Remove-SolderExitedManagers $State $CallerPid
-            Fail 'A restored SolderCAD manager exited before it was ready. Recovery records were preserved.'
+            Remove-SolderExitedReopenTargets $State $CallerPid
+            Fail 'A restored SolderCAD window exited before it was ready. Recovery records were preserved.'
         }
         $handle = [long]$process.MainWindowHandle
         if ($handle -gt 0 -and [SolderInstaller.Windows]::Owner($handle) -eq $process.Id -and
@@ -1362,7 +1364,7 @@ function Wait-SolderManagerTarget {
     }
     # Keep the exact still-live process across Retry; starting a second manager
     # would compete for the same project while this one is still starting.
-    Fail 'A restored SolderCAD manager did not become ready. Recovery records were preserved.'
+    Fail 'A restored SolderCAD window did not become ready. Recovery records were preserved.'
 }
 
 function Get-SolderManagerTarget {
@@ -1377,7 +1379,7 @@ function Get-SolderManagerTarget {
         if (-not $sameProject) { Fail 'A SolderCAD manager record does not match its editors. Recovery records were preserved.' }
         $target.Process.Refresh()
         if ($target.Process.HasExited) {
-            Remove-SolderExitedManagers $State $CallerPid
+            Remove-SolderExitedReopenTargets $State $CallerPid
             Fail 'A restored SolderCAD manager exited. Choose Retry to restore its windows.'
         }
         if ($null -eq $target.Captured) {
@@ -1387,7 +1389,7 @@ function Get-SolderManagerTarget {
             if (-not (Test-SolderManagerRecordMatches $managerEntry $Entry)) {
                 Fail 'A SolderCAD manager record does not match its editors. Recovery records were preserved.'
             }
-            return Wait-SolderManagerTarget $InstallRoot $State $key $managerWindows[0] $managerEntry $CallerPid
+            return Wait-SolderNativeReopenTarget $InstallRoot $State $key $managerWindows[0] $managerEntry $CallerPid
         }
         if (-not (Test-SolderManagerTarget $target)) { Fail 'A restored SolderCAD manager is no longer available. Recovery records were preserved.' }
         return $target
@@ -1418,7 +1420,23 @@ function Get-SolderManagerTarget {
     $process = Open-SolderAfterUpdate -InstallRoot $InstallRoot -Executable $managerEntry.Executable -Project $managerEntry.Project -ManagerHint $hint -PassThru
     $session.Managers[$key] = [pscustomobject]@{ Captured=$null; Handle=[long]0; Process=$process;
         ManagerProject=$managerEntry.ManagerProject; Keys=(New-Object 'System.Collections.Generic.HashSet[string]') }
-    return Wait-SolderManagerTarget $InstallRoot $State $key $managerWindow $managerEntry $CallerPid
+    return Wait-SolderNativeReopenTarget $InstallRoot $State $key $managerWindow $managerEntry $CallerPid
+}
+
+function Get-SolderStandaloneReopenTarget {
+    param([string]$InstallRoot, [object]$State, [object]$Window, [object]$Entry, [int]$CallerPid)
+    $session = $State.Session
+    $key = "$($Window.Process.Id)-$($Window.Handle)"
+    if (-not $session.Standalones.ContainsKey($key)) {
+        $process = Open-SolderAfterUpdate -InstallRoot $InstallRoot -Executable $Entry.Executable -Project $Entry.Project -PassThru
+        # Store the exact process before readiness/ACK waits. Retry must not
+        # start a second editor while this one is still loading its file.
+        $session.Standalones[$key] = [pscustomobject]@{ Captured=$null; Handle=[long]0; Process=$process;
+            Keys=(New-Object 'System.Collections.Generic.HashSet[string]') }
+    }
+    $target = $session.Standalones[$key]
+    if ($null -ne $target.Captured -and (Test-SolderManagerTarget $target)) { return $target }
+    return Wait-SolderNativeReopenTarget $InstallRoot $State $key $Window $Entry $CallerPid -Target $target
 }
 
 function Invoke-SolderManagerReopen {
@@ -1428,7 +1446,7 @@ function Invoke-SolderManagerReopen {
     if (-not (Test-SolderManagerTarget $Target) -or
         (Get-TargetIdentity $Entry.Key $false) -cne $session.RecordIdentities[$Entry.Key] -or
         (Get-FileSha256 $Entry.Key) -cne $session.RecordHashes[$Entry.Key]) {
-        Fail 'A SolderCAD manager or editor record changed. Recovery records were preserved.'
+        Fail 'A SolderCAD window or its recovery record changed. Recovery records were preserved.'
     }
     $mailbox = $session.Mailboxes[$Entry.Key]
     if ($null -eq $mailbox -or $mailbox.TargetPid -ne $Target.Captured.Id -or
@@ -1459,7 +1477,7 @@ function Invoke-SolderManagerReopen {
             (Get-FileSha256 $request) -cne $mailbox.Hash -or
             (Get-TargetIdentity $Entry.Key $false) -cne $session.RecordIdentities[$Entry.Key] -or
             (Get-FileSha256 $Entry.Key) -cne $session.RecordHashes[$Entry.Key]) {
-            Fail 'A SolderCAD manager or editor record changed. Recovery records were preserved.'
+            Fail 'A SolderCAD window or its recovery record changed. Recovery records were preserved.'
         }
         if (Test-Path -LiteralPath $ack -PathType Leaf) {
             Assert-OrdinaryTarget $ack $false
@@ -1490,28 +1508,28 @@ function Invoke-SolderManagerReopen {
                 [void]$session.MailboxIdentities.Remove($request)
                 try { [IO.File]::Delete($ack); [void]$session.MailboxIdentities.Remove($ack) }
                 catch { Write-Warning 'A previous update response could not be cleaned and was preserved.' }
-                Fail 'A SolderCAD editor could not reopen in its project manager. Recovery records were preserved.'
+                Fail 'SolderCAD could not confirm that this editor reopened. Recovery records were preserved. Choose Retry.'
             }
             if (-not (Test-SolderManagerTarget $Target) -or
                 (Get-TargetIdentity $Entry.Key $false) -cne $session.RecordIdentities[$Entry.Key] -or
                 (Get-FileSha256 $Entry.Key) -cne $session.RecordHashes[$Entry.Key] -or
                 (Get-TargetIdentity $request $false) -cne $requestIdentity -or (Get-FileSha256 $request) -cne $mailbox.Hash -or
                 (Get-TargetIdentity $ack $false) -cne $ackIdentity -or (Get-FileSha256 $ack) -cne $ackHash) {
-                Fail 'A restored SolderCAD manager or editor record changed. Recovery records were preserved.'
+                Fail 'A restored SolderCAD window or its recovery record changed. Recovery records were preserved.'
             }
             return
         }
         [SolderInstaller.Windows]::WakeManager($Target.Handle)
         Start-Sleep -Milliseconds 200
     }
-    Fail 'A SolderCAD manager did not confirm its editor reopened. Recovery records were preserved.'
+    Fail 'SolderCAD could not confirm that this window reopened. Recovery records were preserved. Choose Retry.'
 }
 
 function Open-SolderReopenSession {
     param([string]$InstallRoot, [object]$State, [string]$CallerProject, [int]$CallerPid, [bool]$Required)
     if ($null -eq $State.Session) { return }
     Assert-OrdinaryTarget $State.Session.Directory $true
-    Remove-SolderExitedManagers $State $CallerPid
+    Remove-SolderExitedReopenTargets $State $CallerPid
     foreach ($file in @(Get-ChildItem -LiteralPath $State.Session.Directory -File -Force -Filter '*.json')) {
         if ($file.Name -cmatch '\Acli-[0-9]+\.json\z') { continue }
         if ($file.Name -cnotmatch '\A([0-9]+)-([0-9]+)\.json\z') { Fail 'An unrecognized update reopen record was preserved.' }
@@ -1556,7 +1574,13 @@ function Open-SolderReopenSession {
     }
     foreach ($item in $pending) {
         if ($item.Entry.ManagerHwnd -eq 0) {
-            Open-SolderAfterUpdate -InstallRoot $InstallRoot -Executable $item.Entry.Executable -Project $item.Entry.Project
+            if ($item.Entry.FrameType -ceq 'legacy') {
+                Open-SolderAfterUpdate -InstallRoot $InstallRoot -Executable $item.Entry.Executable -Project $item.Entry.Project
+            } else {
+                $target = Get-SolderStandaloneReopenTarget $InstallRoot $State $item.Window $item.Entry $CallerPid
+                Invoke-SolderManagerReopen $State $item.Window $item.Entry $target
+                [void]$target.Keys.Add($item.Entry.Key)
+            }
             Mark-SolderReopenEntry $State $item.Window $item.Entry $CallerPid
         }
     }
@@ -1631,7 +1655,9 @@ function Complete-SolderReopenSession {
     [IO.File]::Delete($session.Request)
     # Unknown files survive; never recursively clean an unrecognized record.
     try { [IO.Directory]::Delete($session.Directory, $false) } catch { }
-    foreach ($target in @($session.Managers.Values)) { if ($null -ne $target.Process) { $target.Process.Dispose() } }
+    foreach ($target in @($session.Managers.Values) + @($session.Standalones.Values)) {
+        if ($null -ne $target.Process) { $target.Process.Dispose() }
+    }
 }
 
 function Quote-SolderArgument {
@@ -1743,6 +1769,8 @@ function Assert-SolderStagedReopenCapability {
                 $capability.component -is [string] -and $capability.component -ceq 'soldercad' -and
                 ($capability.windowsUpdateCloseProtocol -is [int] -or $capability.windowsUpdateCloseProtocol -is [long]) -and $capability.windowsUpdateCloseProtocol -eq 2 -and
                 ($capability.windowsManagerReopenProtocol -is [int] -or $capability.windowsManagerReopenProtocol -is [long]) -and $capability.windowsManagerReopenProtocol -eq 1
+            $valid = $valid -and
+                ($capability.windowsStandaloneReopenProtocol -is [int] -or $capability.windowsStandaloneReopenProtocol -is [long]) -and $capability.windowsStandaloneReopenProtocol -eq 1
         }
     } catch { $valid = $false }
     if (-not $valid) {

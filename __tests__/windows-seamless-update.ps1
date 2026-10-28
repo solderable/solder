@@ -23,7 +23,7 @@ function Wait-For([scriptblock]$Condition, [string]$Message) {
     throw $Message
 }
 function Close-TestRestoredManagers([object]$State) {
-    foreach($target in @($State.Session.Managers.Values)) {
+    foreach($target in @($State.Session.Managers.Values) + @($State.Session.Standalones.Values)) {
         if($null -ne $target.Process -and -not $target.Process.HasExited) {
             if(-not $target.Process.CloseMainWindow() -or -not $target.Process.WaitForExit(10000)) { throw 'A disposable restored manager did not close normally' }
         }
@@ -424,7 +424,7 @@ public class GuiFixture {
  [STAThread] public static void Main(string[] args) {
   if (args.Length == 0 || (args[0] != "close" && args[0] != "veto" && args[0] != "delayed" && args[0] != "legacy" && args[0] != "owned" && args[0] != "untitled")) {
    File.AppendAllText(Environment.GetEnvironmentVariable("SOLDER_TEST_OPENED"), Path.GetFileName(Application.ExecutablePath) + "|" + (args.Length == 0 || args[0] == "-n" ? "(empty)" : args[0]) + "\n");
-   if (Environment.GetEnvironmentVariable("SOLDER_TEST_KEEP_REOPENED") != "1" && String.IsNullOrEmpty(Environment.GetEnvironmentVariable("SOLDER_UPDATE_REOPEN_MANAGER"))) return;
+   if (Environment.GetEnvironmentVariable("SOLDER_TEST_KEEP_REOPENED") != "1" && String.IsNullOrEmpty(Environment.GetEnvironmentVariable("SOLDER_UPDATE_REOPEN_MANAGER")) && Path.GetFileName(Application.ExecutablePath).Equals("kicad.exe",StringComparison.OrdinalIgnoreCase)) return;
    args = new[] { "close" };
   }
   var f = new ManagerFixture(); f.Text="Solder fixture"; f.StartPosition=FormStartPosition.Manual;
@@ -465,7 +465,7 @@ public class GuiFixture {
     $stagedApp=Join-Path $root 'SolderCAD'
     $capabilityPath=Join-Path $stagedApp 'share\kicad\resources\solder_chat\windows-update-capabilities.json'
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $capabilityPath) | Out-Null
-    $capability='{"schemaVersion":1,"component":"soldercad","windowsUpdateCloseProtocol":2,"windowsManagerReopenProtocol":1}'
+    $capability='{"schemaVersion":1,"component":"soldercad","windowsUpdateCloseProtocol":2,"windowsManagerReopenProtocol":1,"windowsStandaloneReopenProtocol":1}'
     [IO.File]::WriteAllText($capabilityPath, $capability)
     $project = Join-Path $root ("saved project " + [char]0x03c0 + "'s.kicad_pro")
     New-Item -ItemType File -Path $project | Out-Null
@@ -483,7 +483,8 @@ public class GuiFixture {
     $children.Add($late)
     Wait-For { $late.Refresh(); $late.MainWindowHandle -ne 0 } 'the late window fixture did not start'
     foreach($badCapability in @('', '{"schemaVersion":1,"component":"soldercad","windowsUpdateCloseProtocol":"2","windowsManagerReopenProtocol":1}',
-        '{"schemaVersion":1,"component":"soldercad","windowsUpdateCloseProtocol":2,"windowsManagerReopenProtocol":2}')) {
+        '{"schemaVersion":1,"component":"soldercad","windowsUpdateCloseProtocol":2,"windowsManagerReopenProtocol":2}',
+        '{"schemaVersion":1,"component":"soldercad","windowsUpdateCloseProtocol":2,"windowsManagerReopenProtocol":1}')) {
         if ($badCapability) { [IO.File]::WriteAllText($capabilityPath, $badCapability) }
         else { Remove-Item -LiteralPath $capabilityPath -ErrorAction SilentlyContinue }
         $refused=$false
@@ -763,6 +764,40 @@ public class GuiFixture {
     $opened=@([IO.File]::ReadAllLines($env:SOLDER_TEST_OPENED))
     Assert-Condition (-not $state.CallerReopened -and $opened.Count -eq 2 -and
         $opened -ccontains ('pcbnew.exe|' + $saved2) -and $opened -ccontains ('kicad.exe|' + $project)) 'a sibling frame suppressed the uncaptured caller fallback'
+    Close-TestRestoredManagers $state
+    Complete-SolderReopenSession $state
+
+    # A live standalone process is not proof its requested file loaded. A
+    # missing ACK preserves its checkpoint and Retry reuses the same process.
+    Remove-Item -LiteralPath $env:SOLDER_TEST_OPENED -ErrorAction SilentlyContinue
+    [IO.File]::WriteAllText($env:SOLDER_TEST_MANAGER_STATUS, 'noack')
+    $standaloneExe=Join-Path $root 'SolderCAD\bin\pcbnew.exe'
+    $standalone=Start-Process -FilePath $standaloneExe -ArgumentList 'close' -PassThru
+    $children.Add($standalone)
+    Wait-For { $standalone.Refresh(); $standalone.MainWindowHandle -ne 0 } 'the standalone source did not start'
+    $standaloneHandle=[long]$standalone.MainWindowHandle
+    $state=New-State
+    New-SolderReopenSession $root $state $true
+    Close-SolderForUpdate $root $state $standalone.Id $standaloneHandle -StagedApp $stagedApp -CliRestoreSupported $true
+    $captured=@($state.Session.Processes | Where-Object {$_.Id -eq $standalone.Id})[0]
+    $standalonePath=Join-Path $state.Session.Directory ("$($standalone.Id)-$standaloneHandle.json")
+    $standaloneRecord=[ordered]@{schemaVersion=1;nonce=$state.Session.Nonce;pid=$standalone.Id;hwnd=[string]$standaloneHandle;
+        executable=$standaloneExe;project=$saved2;frameType='pcb';managerHwnd='0';managerStartTime='0';managerProject='';documentExisted=$true}|ConvertTo-Json -Compress
+    Write-TransactionRecord $standalonePath $standaloneRecord
+    $window=@($state.Session.Windows | Where-Object {$_.Process.Id -eq $standalone.Id -and $_.Handle -eq $standaloneHandle})[0]
+    $entry=Get-SolderReopenEntry $state.Session $window '' 0 $true
+    $target=Get-SolderStandaloneReopenTarget $root $state $window $entry 0
+    $firstStandaloneId=$target.Process.Id
+    $failed=$false
+    try { Invoke-SolderManagerReopen $state $window $entry $target 500 } catch {$failed=$true}
+    Assert-Condition ($failed -and -not $target.Process.HasExited -and -not $state.Session.Opened.Contains($standalonePath) -and
+        (Test-Path -LiteralPath $standalonePath)) 'a live standalone without a document acknowledgement lost its checkpoint'
+    [IO.File]::WriteAllText($env:SOLDER_TEST_MANAGER_STATUS, 'already_open')
+    Open-SolderReopenSession $root $state '' 0 $true
+    Assert-Condition ($state.Session.Opened.Contains($standalonePath) -and @($state.Session.Standalones.Values).Count -eq 1 -and
+        @($state.Session.Standalones.Values)[0].Process.Id -eq $firstStandaloneId -and
+        @([IO.File]::ReadAllLines($env:SOLDER_TEST_OPENED)).Count -eq 1) 'standalone Retry duplicated the editor or skipped the document acknowledgement'
+    Close-TestRestoredManagers $state
     Complete-SolderReopenSession $state
 
     # A closed manager-owned editor returns to its still-running original
@@ -858,7 +893,7 @@ public class GuiFixture {
     $state.Session.Managers[$managerKey]=[pscustomobject]@{Captured=$null;Handle=[long]0;Process=$starting;
         ManagerProject=$project;Keys=(New-Object 'System.Collections.Generic.HashSet[string]')}
     $failed=$false
-    try { [void](Wait-SolderManagerTarget $root $state $managerKey $managerWindow $managerEntry $manager.Id 500) } catch { $failed=$true }
+    try { [void](Wait-SolderNativeReopenTarget $root $state $managerKey $managerWindow $managerEntry $manager.Id 500) } catch { $failed=$true }
     Assert-Condition ($failed -and -not $starting.HasExited -and $state.Session.Managers[$managerKey].Process.Id -eq $starting.Id) 'a slow live manager was lost at the readiness timeout'
     [IO.File]::WriteAllText($readyFile, 'ready')
     [IO.File]::WriteAllText($env:SOLDER_TEST_MANAGER_STATUS, 'conflict')
