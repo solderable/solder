@@ -122,6 +122,11 @@ $CoordinatorState.Stage='complete'
     Assert-Condition (Test-SolderOwnedShortcut $shortcutPath $root) 'the existing app shortcut was not recognized'
     Set-SolderManagedShortcut $shortcutPath $root $helper $false
     Assert-Condition (Test-SolderOwnedShortcut $shortcutPath $root) 'the managed shortcut was not recognized'
+    $savedLink = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcutPath)
+    $expectedTarget = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    Assert-Condition ($savedLink.TargetPath.Equals($expectedTarget, [StringComparison]::OrdinalIgnoreCase) -and
+        $savedLink.Arguments -ceq (Get-SolderLauncherArguments $root $helper $false) -and
+        ((Get-Item -LiteralPath $shortcutPath -Force).Attributes -band [IO.FileAttributes]::Hidden) -eq 0) 'the saved shortcut has an incorrect target, arguments, or visibility'
     $other = Join-Path $root 'other.lnk'
     $link = $shell.CreateShortcut($other)
     $link.TargetPath = Join-Path $env:SystemRoot 'system32\notepad.exe'
@@ -135,6 +140,52 @@ $CoordinatorState.Stage='complete'
     try { Set-SolderManagedShortcut -ShortcutPath $shortcutPath -InstallRoot $root -RepairScript ($helper + [char]0 + 'bad') -Repair $false }
     catch { $refused = $true }
     Assert-Condition ($refused -and (Get-FileSha256 $shortcutPath) -ceq $oldShortcutHash) 'a failed shortcut write changed the existing shortcut'
+
+    # Windows ReplaceFile can move the original to its backup before failing.
+    # Inject only that OS failure boundary; the recovery uses real file moves,
+    # identity and hashes, including a concurrently created foreign target.
+    $partialTarget=Join-Path $root 'partial-target.lnk'
+    $partialSource=Join-Path $root 'partial-source.lnk'
+    $partialBackup=Join-Path $root 'partial-backup.lnk'
+    [IO.File]::Copy($shortcutPath,$partialTarget)
+    [IO.File]::Copy($shortcutPath,$partialSource)
+    $partialIdentity=Get-TargetIdentity $partialTarget $false
+    $partialHash=Get-FileSha256 $partialTarget
+    $partialFailure={param($source,$target,$backup) [IO.File]::Move($target,$backup); throw 'fixture ReplaceFile failure'}
+    $message=''
+    try { Invoke-SolderShortcutReplace $partialSource $partialTarget $partialBackup $partialIdentity $partialHash $partialFailure 3>$null }
+    catch { $message=$_.Exception.Message }
+    Assert-Condition ($message -ceq 'fixture ReplaceFile failure' -and (Test-Path -LiteralPath $partialTarget) -and
+        -not (Test-Path -LiteralPath $partialBackup) -and (Get-TargetIdentity $partialTarget $false) -ceq $partialIdentity -and
+        (Get-FileSha256 $partialTarget) -ceq $partialHash) 'a partial shortcut replacement did not restore the original'
+
+    $foreignTarget=Join-Path $root 'foreign-target.lnk'
+    $foreignSource=Join-Path $root 'foreign-source.lnk'
+    $foreignBackup=Join-Path $root 'foreign-backup.lnk'
+    [IO.File]::Copy($shortcutPath,$foreignTarget)
+    [IO.File]::Copy($shortcutPath,$foreignSource)
+    $foreignIdentity=Get-TargetIdentity $foreignTarget $false
+    $foreignHash=Get-FileSha256 $foreignTarget
+    $foreignFailure={param($source,$target,$backup) [IO.File]::Move($target,$backup); [IO.File]::WriteAllText($target,'foreign shortcut'); throw 'fixture ReplaceFile failure'}
+    $message=''
+    try { Invoke-SolderShortcutReplace $foreignSource $foreignTarget $foreignBackup $foreignIdentity $foreignHash $foreignFailure 3>$null }
+    catch { $message=$_.Exception.Message }
+    Assert-Condition ($message -ceq 'fixture ReplaceFile failure' -and [IO.File]::ReadAllText($foreignTarget) -ceq 'foreign shortcut' -and
+        (Get-TargetIdentity $foreignBackup $false) -ceq $foreignIdentity -and (Get-FileSha256 $foreignBackup) -ceq $foreignHash) 'a concurrent shortcut or original backup was overwritten'
+
+    $changedTarget=Join-Path $root 'changed-target.lnk'
+    $changedSource=Join-Path $root 'changed-source.lnk'
+    $changedBackup=Join-Path $root 'changed-backup.lnk'
+    [IO.File]::Copy($shortcutPath,$changedTarget)
+    [IO.File]::Copy($shortcutPath,$changedSource)
+    $changedIdentity=Get-TargetIdentity $changedTarget $false
+    $changedHash=Get-FileSha256 $changedTarget
+    $changedFailure={param($source,$target,$backup) [IO.File]::Move($target,$backup); [IO.File]::WriteAllText($backup,'changed backup'); throw 'fixture ReplaceFile failure'}
+    $message=''
+    try { Invoke-SolderShortcutReplace $changedSource $changedTarget $changedBackup $changedIdentity $changedHash $changedFailure 3>$null }
+    catch { $message=$_.Exception.Message }
+    Assert-Condition ($message -ceq 'fixture ReplaceFile failure' -and -not (Test-Path -LiteralPath $changedTarget) -and
+        [IO.File]::ReadAllText($changedBackup) -ceq 'changed backup') 'a changed shortcut backup was moved or removed'
 
     # A loopback HTTP endpoint exercises the real streaming downloader and
     # cancellation while a response body is stalled, without external network.

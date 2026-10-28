@@ -1740,6 +1740,31 @@ function Test-SolderOwnedShortcut {
     } catch { return $false }
 }
 
+function Invoke-SolderShortcutReplace {
+    param([string]$Temporary, [string]$ShortcutPath, [string]$Previous,
+          [object]$OriginalIdentity, [string]$OriginalHash, [scriptblock]$ReplaceOperation)
+    try {
+        if ($null -eq $ReplaceOperation) { [IO.File]::Replace($Temporary, $ShortcutPath, $Previous) }
+        else { & $ReplaceOperation $Temporary $ShortcutPath $Previous }
+    } catch {
+        $publicationError = $_
+        # ReplaceFile can move the original to the backup and then fail
+        # before publishing its replacement. Restore only the same original,
+        # and never overwrite a destination created by another process.
+        try {
+            if (-not (Test-Path -LiteralPath $ShortcutPath) -and
+                (Get-TargetIdentity $Previous $false) -ceq $OriginalIdentity -and
+                (Get-FileSha256 $Previous) -ceq $OriginalHash) {
+                [IO.File]::Move($Previous, $ShortcutPath)
+            }
+        } catch { }
+        try {
+            if (Test-Path -LiteralPath $Previous) { Write-Warning "Shortcut backup retained at '$Previous'." }
+        } catch { }
+        throw $publicationError
+    }
+}
+
 function Set-SolderManagedShortcut {
     param([string]$ShortcutPath, [string]$InstallRoot, [string]$RepairScript, [bool]$Repair, [bool]$OnlyOwned = $false)
     $shell = New-Object -ComObject WScript.Shell
@@ -1752,7 +1777,9 @@ function Set-SolderManagedShortcut {
     if ($OnlyOwned -and ($null -eq $originalIdentity -or -not (Test-SolderOwnedShortcut -ShortcutPath $ShortcutPath -InstallRoot $InstallRoot))) { return }
     $arguments = Get-SolderLauncherArguments $InstallRoot $RepairScript $Repair
     if ($arguments.Length -gt 1000) { Fail 'The installation path is too long for a Windows shortcut.' }
-    $temporary = Join-Path $directory ('.solder-shortcut-' + [Guid]::NewGuid().ToString('N') + '.lnk')
+    # A dot-prefixed name can become Hidden on a redirected macOS desktop,
+    # and those attributes may be carried onto the published shortcut.
+    $temporary = Join-Path $directory ('solder-shortcut-' + [Guid]::NewGuid().ToString('N') + '.tmp.lnk')
     try {
         $shortcut = $shell.CreateShortcut($temporary)
         $shortcut.TargetPath = $target
@@ -1762,8 +1789,20 @@ function Set-SolderManagedShortcut {
         $shortcut.Description = if ($Repair) { 'Repair SolderCAD' } else { 'SolderCAD' }
         $shortcut.WindowStyle = 7
         $shortcut.Save()
-        $saved = $shell.CreateShortcut($temporary)
-        if ($saved.Arguments -cne $arguments -or -not $saved.TargetPath.Equals($target, [StringComparison]::OrdinalIgnoreCase)) {
+        # Inspect the file before reopening it: some redirected desktops do
+        # not expose a newly saved Shell Link to WScript until it is inspected.
+        Assert-OrdinaryTarget -Path $temporary -Directory $false
+        if ((Get-Item -LiteralPath $temporary -Force).Length -le 0) { Fail 'Windows could not save the SolderCAD shortcut.' }
+        # Require complete, exact readback before replacing an existing link;
+        # a bounded retry also accommodates a delayed shared-folder update.
+        $readback = [Diagnostics.Stopwatch]::StartNew()
+        $verified = $false
+        do {
+            $saved = (New-Object -ComObject WScript.Shell).CreateShortcut($temporary)
+            $verified = $saved.Arguments -ceq $arguments -and $saved.TargetPath.Equals($target, [StringComparison]::OrdinalIgnoreCase)
+            if (-not $verified -and $readback.ElapsedMilliseconds -lt 2000) { Start-Sleep -Milliseconds 100 }
+        } while (-not $verified -and $readback.ElapsedMilliseconds -lt 2000)
+        if (-not $verified) {
             Fail 'Windows could not save the complete SolderCAD shortcut.'
         }
         if ((Get-TargetIdentity $ShortcutPath $false) -cne $originalIdentity -or
@@ -1772,7 +1811,7 @@ function Set-SolderManagedShortcut {
         }
         if (Test-Path -LiteralPath $ShortcutPath) {
             $previous = Join-Path $directory ('.solder-shortcut-previous-' + [Guid]::NewGuid().ToString('N') + '.lnk')
-            [IO.File]::Replace($temporary, $ShortcutPath, $previous)
+            Invoke-SolderShortcutReplace -Temporary $temporary -ShortcutPath $ShortcutPath -Previous $previous -OriginalIdentity $originalIdentity -OriginalHash $originalHash
             try { [IO.File]::Delete($previous) } catch { Write-Warning "Previous shortcut retained at '$previous'." }
         } else { [IO.File]::Move($temporary, $ShortcutPath) }
     } finally { if (Test-Path -LiteralPath $temporary) { [IO.File]::Delete($temporary) } }
