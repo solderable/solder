@@ -1961,6 +1961,10 @@ function Start-SolderCoordinator {
     }.GetNewClosure())
     $timer = New-Object Windows.Forms.Timer
     $timer.Interval = 200
+    # The GUI bootstrap invokes this installer from a nested scriptblock.
+    # Capture the function itself before the timer's dynamic-module closure is
+    # created; an unqualified lookup there cannot see the installer's scope.
+    $writeCoordinatorLog = ${function:Write-SolderCoordinatorLog}
     $timer.Add_Tick({
         if (-not $ui.Finished) {
             if (-not $state.CancelRequested) { $label.Text = $state.Message }
@@ -1972,10 +1976,10 @@ function Start-SolderCoordinator {
                     $label.Text = if ($state.Stage -eq 'restored') { 'Your saved sessions were restored. The update was not installed.' } else { 'SolderCAD is up to date.' }
                     $retry.Visible = $false
                     if ($state.Stage -eq 'complete') { $ui.SuccessAt = [Diagnostics.Stopwatch]::StartNew() }
-                    Write-SolderCoordinatorLog $InstallRoot $state.Stage 'success' ''
+                    & $writeCoordinatorLog $InstallRoot $state.Stage 'success' ''
                 } catch {
                     $message = $_.Exception.Message
-                    Write-SolderCoordinatorLog $InstallRoot $state.Stage $(if ($state.CancelRequested) { 'cancelled' } else { 'failure' }) $message
+                    & $writeCoordinatorLog $InstallRoot $state.Stage $(if ($state.CancelRequested) { 'cancelled' } else { 'failure' }) $message
                     if ($state.PendingRestore) {
                         $label.Text = 'A saved session could not reopen. Choose Retry to restore it.'
                     } elseif ($state.PublicationCommitted) {
