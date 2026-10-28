@@ -394,7 +394,7 @@ function Get-InstalledVersions {
                 $appVersion = $data.version
             }
         } catch { }
-        if (-not $appVersion) { Write-Warning "The existing SolderCAD version is unknown. It will be replaced by the selected release." }
+        if (-not $appVersion) { Write-Warning "The existing SolderCAD version is unknown. If installation proceeds, it will be replaced by the selected release." }
     } elseif ($hasCli) {
         Write-Warning "SolderCAD is missing. It will be installed from the selected release."
     }
@@ -419,7 +419,7 @@ function Get-InstalledVersions {
             }
         } catch { }
         finally { Remove-Item -LiteralPath $probe -Recurse -Force -ErrorAction SilentlyContinue }
-        if (-not $cliVersion) { Write-Warning "The existing Solder CLI version is unknown. It will be replaced by the selected release." }
+        if (-not $cliVersion) { Write-Warning "The existing Solder CLI version is unknown. If installation proceeds, it will be replaced by the selected release." }
     } elseif ($hasApp) {
         Write-Warning "The Solder CLI is missing. It will be installed from the selected release."
     }

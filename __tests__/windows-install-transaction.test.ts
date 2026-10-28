@@ -11,6 +11,7 @@ if (process.platform === "win32") {
     "only one installer owns the shared lease": "lease",
     "recovers when verification is interrupted with its executable still open": "interrupted-verifier",
     "refuses known component downgrades while allowing unknown versions": "downgrade-policy",
+    "default install refuses a known newer app before downloading": "default-no-downgrade",
     "extracts archive entries beyond the Windows path limit": "long-archive-path",
     "rejects traversal, reserved names, and duplicate ZIP paths before extraction": "unsafe-archive",
     "validates and extracts the same ZIP name when a Unicode extra field differs": "unicode-extra-field",

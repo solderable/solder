@@ -145,7 +145,7 @@ try {
             Assert-Condition ([IO.File]::ReadAllText($good) -ceq 'hello') 'validated primary name was not extracted'
             Assert-Condition (-not (Test-Path -LiteralPath $alternate)) 'a different Unicode extra-field name was extracted'
         }
-        { $_ -in @('version-mismatch', 'locked-publish') } {
+        { $_ -in @('version-mismatch', 'locked-publish', 'default-no-downgrade') } {
             # Exercise the full installer with a deterministic release boundary.
             # The staged executable runs but reports a different version.
             Add-Type -AssemblyName System.IO.Compression
@@ -154,6 +154,11 @@ try {
             New-Item -ItemType Directory -Force -Path (Join-Path $testInstall 'bin'), (Join-Path $testInstall 'SolderCAD') | Out-Null
             Set-Content (Join-Path $testInstall 'bin\solder.exe') 'old cli'
             Set-Content (Join-Path $testInstall 'SolderCAD\old.txt') 'old app'
+            if ($Scenario -eq 'default-no-downgrade') {
+                $resources = Join-Path $testInstall 'SolderCAD\share\kicad\resources\solder_chat'
+                New-Item -ItemType Directory -Force $resources | Out-Null
+                Set-Content (Join-Path $resources 'solder-release.json') '{"schemaVersion":1,"component":"soldercad","version":"2.0.0"}'
+            }
             $fakeExe = Join-Path $root 'fake.exe'
             $fakeVersion = if ($Scenario -eq 'version-mismatch') { '1.0.0' } else { '1.36.0' }
             $source = 'public class VersionFixture { public static void Main() { System.Console.WriteLine("solder v' + $fakeVersion + '"); } }'
@@ -186,16 +191,23 @@ try {
                 })
             }
             function Invoke-RestMethod { param($Uri, $TimeoutSec, $Headers) return $fixtureRelease }
-            function Invoke-WebRequest { param($Uri, $OutFile, $TimeoutSec, $Headers) [IO.File]::Copy($fixtureZip, $OutFile) }
+            $script:downloadCalled = $false
+            function Invoke-WebRequest { param($Uri, $OutFile, $TimeoutSec, $Headers) $script:downloadCalled = $true; [IO.File]::Copy($fixtureZip, $OutFile) }
             $failed = $false
             $handle = $null
             if ($Scenario -eq 'locked-publish') {
                 $handle = [IO.File]::Open((Join-Path $testInstall 'bin\solder.exe'), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
             }
             try {
-                try { & ([scriptblock]::Create((Get-Content -LiteralPath $Installer -Raw))) -Version '1.36.0' -InstallDir $testInstall -NoUserIntegration }
+                try {
+                    $installerScript = [scriptblock]::Create((Get-Content -LiteralPath $Installer -Raw))
+                    if ($Scenario -eq 'default-no-downgrade') { & $installerScript -InstallDir $testInstall -NoUserIntegration }
+                    else { & $installerScript -Version '1.36.0' -InstallDir $testInstall -NoUserIntegration }
+                }
                 catch {
-                    $failed = if ($Scenario -eq 'version-mismatch') { $_.Exception.Message -like '*did not identify itself as v1.36.0*' } else { $true }
+                    $failed = if ($Scenario -eq 'version-mismatch') { $_.Exception.Message -like '*did not identify itself as v1.36.0*' }
+                              elseif ($Scenario -eq 'default-no-downgrade') { $_.Exception.Message -like '*newer than release*' }
+                              else { $true }
                 }
             } finally { if ($null -ne $handle) { $handle.Dispose() } }
             Assert-Condition $failed 'invalid installation unexpectedly succeeded'
@@ -203,7 +215,12 @@ try {
             Assert-Condition ((Get-Content (Join-Path $testInstall 'SolderCAD\old.txt') -Raw).Trim() -ceq 'old app') 'old app was changed'
             Assert-Condition (-not (Test-Path (Join-Path $testInstall '.solder-installer-transaction'))) 'failed validation left a blocking transaction'
             $unpublished = @(Get-ChildItem -LiteralPath $testInstall -File -Filter '.solder-verify-*.exe')
-            Assert-Condition ($unpublished.Count -eq 1) 'the executed unpublished CLI was not preserved'
+            if ($Scenario -eq 'default-no-downgrade') {
+                Assert-Condition (-not $script:downloadCalled) 'the release was downloaded before the downgrade refusal'
+                Assert-Condition ($unpublished.Count -eq 0) 'a verifier was created before the downgrade refusal'
+            } else {
+                Assert-Condition ($unpublished.Count -eq 1) 'the executed unpublished CLI was not preserved'
+            }
         }
         'lease' {
             $first = Enter-SolderInstallLease $root
