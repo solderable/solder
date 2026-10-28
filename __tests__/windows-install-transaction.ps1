@@ -419,6 +419,18 @@ try {
                 Assert-Condition $failed 'an update from another CLI was not detected'
                 Assert-Condition (-not $child.HasExited) 'the installer closed the other CLI'
             } finally { Stop-Process -Id $child.Id -Force -ErrorAction SilentlyContinue }
+            $child = Start-Process -FilePath $executable -ArgumentList @('update', '--check', '--json') -WindowStyle Hidden -PassThru
+            try {
+                Assert-SolderProcessesClosed $target
+                Assert-Condition (-not $child.HasExited) 'the read-only check was closed'
+            } finally { Stop-Process -Id $child.Id -Force -ErrorAction SilentlyContinue }
+            $child = Start-Process -FilePath $executable -ArgumentList @('update', '--check', '--force') -WindowStyle Hidden -PassThru
+            try {
+                $failed = $false
+                try { Assert-SolderProcessesClosed $target } catch { $failed = $true }
+                Assert-Condition $failed 'an unknown update variant was accepted'
+                Assert-Condition (-not $child.HasExited) 'the installer closed the other CLI'
+            } finally { Stop-Process -Id $child.Id -Force -ErrorAction SilentlyContinue }
             $child = Start-Process -FilePath $executable -ArgumentList 'chat' -WindowStyle Hidden -PassThru
             try {
                 Assert-SolderProcessesClosed $target

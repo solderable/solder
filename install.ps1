@@ -362,7 +362,18 @@ function Assert-SolderProcessesClosed {
             try { $arguments = [SolderInstaller.NativePath]::SplitCommandLine($process.CommandLine) }
             catch { Fail "Cannot inspect a running Solder process. Close it before installing." }
             if ($arguments.Length -gt 1 -and $arguments[1] -ceq 'update') {
-                Fail "Another Solder update is running. Wait for it to finish before installing."
+                $check = $false
+                $json = $false
+                $unknown = $false
+                for ($i = 2; $i -lt $arguments.Length; $i++) {
+                    if ($arguments[$i] -ceq '--check' -and -not $check) { $check = $true }
+                    elseif ($arguments[$i] -ceq '--json' -and -not $json) { $json = $true }
+                    else { $unknown = $true }
+                }
+                # Only the documented read-only check is known not to mutate.
+                if (-not $check -or $unknown) {
+                    Fail "Another Solder update is running. Wait for it to finish before installing."
+                }
             }
         }
     }
