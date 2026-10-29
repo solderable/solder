@@ -23,5 +23,48 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
-      - name: Verify release selection, archive integrity, and desktop shortcuts
-        run: bun test __tests__/installers.test.ts
+      - name: Verify release selection, integrity, and Windows transactions
+        run: bun test --timeout 30000 __tests__/installers.test.ts __tests__/windows-install-transaction.test.ts __tests__/windows-seamless-update.test.ts
+
+  windows-release-recovery:
+    name: Recover an existing Windows release
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install 1.35 and repair to 1.36
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Get-Sha256([string]$Path) {
+            $sha = [Security.Cryptography.SHA256]::Create()
+            $stream = [IO.File]::OpenRead($Path)
+            try { return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '') }
+            finally { $stream.Dispose(); $sha.Dispose() }
+          }
+          $root = Join-Path $env:RUNNER_TEMP 'Solder Recovery Test'
+          $envNames = @('Path', 'KICAD_APP_PATH', 'KICAD_CLI_PATH', 'KICAD_DISABLE_LIBRARY_PRELOAD', 'KICAD_SOFTWARE_RENDERING')
+          $originalEnv = @{}
+          foreach ($name in $envNames) { $originalEnv[$name] = [Environment]::GetEnvironmentVariable($name, 'User') }
+          $shortcut = Join-Path ([Environment]::GetFolderPath('DesktopDirectory', 'DoNotVerify')) 'SolderCAD.lnk'
+          $shortcutHash = if (Test-Path -LiteralPath $shortcut) { Get-Sha256 $shortcut } else { $null }
+          $project = Join-Path $env:RUNNER_TEMP 'solder-user-project.txt'
+          Set-Content -LiteralPath $project -Value 'do not modify'
+
+          & .\install.ps1 -Version 1.35.0 -InstallDir $root -NoUserIntegration
+          if ((& (Join-Path $root 'bin\solder.exe') --version) -cne 'solder v1.35.0') { throw 'Old CLI identity did not match.' }
+          $metadataPath = Join-Path $root 'SolderCAD\share\kicad\resources\solder_chat\solder-release.json'
+          if ((Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json).version -cne '1.35.0') { throw 'Old app identity did not match.' }
+          & .\install.ps1 -Version 1.36.0 -InstallDir $root -NoUserIntegration
+          if ((& (Join-Path $root 'bin\solder.exe') --version) -cne 'solder v1.36.0') { throw 'New CLI identity did not match.' }
+          if ((Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json).version -cne '1.36.0') { throw 'New app identity did not match.' }
+          $nativeCommit = (& (Join-Path $root 'SolderCAD\bin\kicad-cli.exe') version --format commit).Trim()
+          if ($nativeCommit -cne 'cb43855bafc5f219506b8b6c74fcafa4d313d0c8') { throw 'New SolderCAD commit did not match.' }
+          $unicodeSymbol = Join-Path $root ('SolderCAD\share\kicad\symbols\Isolator.kicad_symdir\' + [char]0x03c0 + '120U30.kicad_sym')
+          if ((Get-Sha256 $unicodeSymbol) -ine '37ae3fd22f03c7036523dc88130c16b6b06d1ab1e20a5dc6ee1b879e76f8861f') { throw 'Unicode library entry did not match.' }
+          if ((Get-Content -LiteralPath $project -Raw).Trim() -cne 'do not modify') { throw 'User project changed.' }
+          foreach ($name in $envNames) {
+            if ([Environment]::GetEnvironmentVariable($name, 'User') -cne $originalEnv[$name]) { throw "User environment changed: $name" }
+          }
+          $newShortcutHash = if (Test-Path -LiteralPath $shortcut) { Get-Sha256 $shortcut } else { $null }
+          if ($newShortcutHash -cne $shortcutHash) { throw 'Desktop shortcut changed.' }

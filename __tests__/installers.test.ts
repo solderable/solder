@@ -165,7 +165,7 @@ for (const runtime of runtimes) {
           expect({ url: fields["Download URL"], source: fields["Download source"], size: fields["Archive bytes"], digest: fields["SHA-256"] }).toEqual({ url: expectedUrl, source: scenario.github ? "github" : "uploadthing", size: "3", digest: abcSha256 });
         } else {
           const selected = JSON.parse(result.output.trim().split("\n").at(-1)!);
-          expect(selected).toEqual({ Version: "1.2.3", AssetName: "solder-1.2.3-windows-x64.zip", DownloadUrl: expectedUrl, Size: 3, Sha256: abcSha256, Source: scenario.github ? "github" : "uploadthing" });
+          expect(selected).toEqual({ Version: "1.2.3", CliVersion: "1.2.3", AssetName: "solder-1.2.3-windows-x64.zip", DownloadUrl: expectedUrl, Size: 3, Sha256: abcSha256, Source: scenario.github ? "github" : "uploadthing" });
         }
       });
     }
@@ -196,6 +196,24 @@ test("Windows rejects a truncated archive before extraction", () => {
   const result = runPowerShell({ name: "truncated archive" }, "ab");
   expect(result.code).toBe(1);
   expect(result.error).toContain("downloaded archive size does not match the GitHub release asset");
+});
+
+test("Windows checks the actual CLI version when a release carries an older binary", () => {
+  const result = runPowerShell({
+    name: "carried CLI",
+    body: body => '<!-- solder-release-binary-versions {"windows":"1.2.2"} -->\n' + body,
+  });
+  expect({ code: result.code, error: result.error }).toEqual({ code: 0, error: "" });
+  expect(JSON.parse(result.output.trim().split("\n").at(-1)!).CliVersion).toBe("1.2.2");
+});
+
+test("Windows rejects malformed binary-version metadata", () => {
+  const result = runPowerShell({
+    name: "invalid CLI version",
+    body: body => '<!-- solder-release-binary-versions {"windows":"not-a-version"} -->\n' + body,
+  });
+  expect(result.code).toBe(1);
+  expect(result.error.trim()).toBe("Release binary version metadata does not identify the Windows CLI.");
 });
 
 // COM shell links are a Windows boundary: run the real implementation there,
