@@ -481,7 +481,7 @@ public class ManagerFixture : Form {
 public class GuiFixture {
  [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern bool SetPropW(IntPtr hwnd, string name, IntPtr value);
  [STAThread] public static void Main(string[] args) {
-  if (args.Length == 0 || (args[0] != "close" && args[0] != "veto" && args[0] != "exit" && args[0] != "hung" && args[0] != "delayed" && args[0] != "legacy" && args[0] != "owned" && args[0] != "untitled")) {
+  if (args.Length == 0 || (args[0] != "close" && args[0] != "veto" && args[0] != "exit" && args[0] != "delayed" && args[0] != "legacy" && args[0] != "owned" && args[0] != "untitled")) {
    File.AppendAllText(Environment.GetEnvironmentVariable("SOLDER_TEST_OPENED"), Path.GetFileName(Application.ExecutablePath) + "|" + (args.Length == 0 || args[0] == "-n" ? "(empty)" : args[0]) + "\n");
    if (Environment.GetEnvironmentVariable("SOLDER_TEST_KEEP_REOPENED") != "1" && String.IsNullOrEmpty(Environment.GetEnvironmentVariable("SOLDER_UPDATE_REOPEN_MANAGER")) && Path.GetFileName(Application.ExecutablePath).Equals("kicad.exe",StringComparison.OrdinalIgnoreCase)) return;
    args = new[] { "close" };
@@ -506,7 +506,12 @@ public class GuiFixture {
   if (args[0]=="untitled") f.Shown += (sender,e) => {
    var unknown = new Form(); unknown.Text=""; unknown.ShowInTaskbar=false; unknown.Show(f);
   };
-  f.FormClosing += (sender,e) => { if(args[0]=="veto") e.Cancel=true; if(args[0]=="exit") { Thread.Sleep(6500); Environment.Exit(0); } if(args[0]=="hung") Thread.Sleep(30000); if(args[0]=="delayed") Thread.Sleep(1500); };
+  if (args[0]=="exit") f.Shown += (sender,e) => {
+   string signal=Environment.GetEnvironmentVariable("SOLDER_TEST_RECEIVER_EXIT_FILE");
+   ThreadPool.QueueUserWorkItem(_ => { while(!File.Exists(signal)) Thread.Sleep(10); Environment.Exit(0); });
+   Thread.Sleep(Timeout.Infinite);
+  };
+  f.FormClosing += (sender,e) => { if(args[0]=="veto") e.Cancel=true; if(args[0]=="delayed") Thread.Sleep(1500); };
   Application.Run(f);
  }
 }
@@ -617,22 +622,33 @@ public class GuiFixture {
     Assert-Condition ($state.Session.Windows.Count -ge 2) 'an owned or hidden capable frame was not captured'
     Complete-SolderReopenSession $state
 
-    # A receiver can time out inside WM_CLOSE and then exit during the close
-    # grace. The HWND is nevertheless gone. Publication must still
-    # require the same production native close-record gate as any other close.
-    $exitProbe=Start-Process -FilePath $gui -ArgumentList 'exit' -PassThru
-    $children.Add($exitProbe)
-    Wait-For { $exitProbe.Refresh(); $exitProbe.MainWindowHandle -ne 0 } 'the receiver-exit probe did not start'
-    $exitHandle=[long]$exitProbe.MainWindowHandle
-    $responded=[SolderInstaller.Windows]::RequestClose($exitHandle)
-    $probeExited=$exitProbe.WaitForExit(10000)
-    $probeExists=[SolderInstaller.Windows]::Exists($exitHandle)
-    Assert-Condition ($probeExited -and -not $responded -and -not $probeExists) ("the native receiver-exit probe did not exercise a missing Windows response: responded=$responded exited=$probeExited exists=$probeExists")
-    foreach($withRecord in @($true,$false)) {
+    # A genuinely hung receiver returns no native WM_CLOSE response, then
+    # exits during the close grace. Publication still requires native records.
+    Add-Type @'
+using System; using System.Runtime.InteropServices;
+public static class CloseReceiverFixtureNative {
+ [DllImport("user32.dll")] public static extern bool IsHungAppWindow(IntPtr handle);
+}
+'@
+    function Start-UnresponsiveReceiver {
+        $signal=Join-Path $root ('receiver-exit-'+[Guid]::NewGuid().ToString('N'))
+        $env:SOLDER_TEST_RECEIVER_EXIT_FILE=$signal
         $receiver=Start-Process -FilePath $gui -ArgumentList 'exit' -PassThru
         $children.Add($receiver)
-        Wait-For { $receiver.Refresh(); $receiver.MainWindowHandle -ne 0 } 'the receiver-exit coordinator fixture did not start'
+        Wait-For { $receiver.Refresh(); $receiver.MainWindowHandle -ne 0 } 'the unresponsive receiver did not start'
         $handle=[long]$receiver.MainWindowHandle
+        Wait-For { [CloseReceiverFixtureNative]::IsHungAppWindow([IntPtr]$handle) } 'the receiver never became genuinely unresponsive'
+        return [pscustomobject]@{Process=$receiver;Handle=$handle;Signal=$signal}
+    }
+    $probe=Start-UnresponsiveReceiver
+    $responded=[SolderInstaller.Windows]::RequestClose($probe.Handle)
+    Assert-Condition (-not $responded -and [SolderInstaller.Windows]::Exists($probe.Handle)) 'the native probe did not produce no-response from a live hung window'
+    [IO.File]::WriteAllText($probe.Signal,'exit')
+    Assert-Condition ($probe.Process.WaitForExit(10000) -and -not [SolderInstaller.Windows]::Exists($probe.Handle)) 'the no-response receiver did not exit after its own release signal'
+    foreach($withRecord in @($true,$false)) {
+        $fixture=Start-UnresponsiveReceiver
+        $receiver=$fixture.Process
+        $handle=$fixture.Handle
         $state=New-State
         New-SolderReopenSession $root $state $true
         $recordPath=Join-Path $state.Session.Directory ("$($receiver.Id)-$handle.json")
@@ -643,7 +659,19 @@ public class GuiFixture {
                 managerStartTime=$captured.StartFileTime;managerProject='';documentExisted=$false}|ConvertTo-Json -Compress
             Write-TransactionRecord $recordPath $record
         }
-        Close-SolderForUpdate $root $state 0 0 -StagedApp $stagedApp -CliRestoreSupported $true
+        # Observe the existing public progress state from another runspace;
+        # only the disposable receiver controls its own exit. No product hook.
+        $release=[PowerShell]::Create()
+        [void]$release.AddScript({param($shared,$signal)
+            $wait=[Diagnostics.Stopwatch]::StartNew()
+            while($shared.Stage -cne 'closing' -and $wait.ElapsedMilliseconds -lt 30000){Start-Sleep -Milliseconds 10}
+            if($shared.Stage -cne 'closing'){throw 'The coordinator did not reach native close'}
+            Start-Sleep -Milliseconds 200
+            [IO.File]::WriteAllText($signal,'exit')
+        }).AddArgument($state).AddArgument($fixture.Signal)
+        $released=$release.BeginInvoke()
+        try { Close-SolderForUpdate $root $state 0 0 -StagedApp $stagedApp -CliRestoreSupported $true }
+        finally { $release.Stop(); $release.Dispose() }
         Assert-Condition ($receiver.WaitForExit(5000) -and $state.ClosedAny) 'a receiver-exit close was treated as a live unresponsive window'
         $recordFailure=$null
         try { Assert-SolderClosedWindowRecords $state '' 0 } catch {$recordFailure=$_.Exception.Message}
@@ -655,9 +683,8 @@ public class GuiFixture {
         }
         Complete-SolderReopenSession $state
     }
-    $hung=Start-Process -FilePath $gui -ArgumentList 'hung' -PassThru
-    $children.Add($hung)
-    Wait-For { $hung.Refresh(); $hung.MainWindowHandle -ne 0 } 'the unresponsive receiver fixture did not start'
+    $hungFixture=Start-UnresponsiveReceiver
+    $hung=$hungFixture.Process
     $state=New-State
     New-SolderReopenSession $root $state $true
     $hungFailure=$null
