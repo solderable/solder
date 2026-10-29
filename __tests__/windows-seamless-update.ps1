@@ -804,6 +804,57 @@ public class GuiFixture {
     [IO.File]::Copy($project,$savedAs)
     Assert-CallerRetry $project $savedAs $savedAs $false
     Assert-CallerRetry '' '' '(empty)' $true
+
+    # Repair shortcuts have no caller PID or project. Once a captured manager
+    # has been acknowledged, the anonymous launch is satisfied. Requests with
+    # an explicit project/caller must retain their existing fallback behavior.
+    function Assert-ManagerLaunchRequest([bool]$RestoreManager, [string]$RequestedProject,
+                                         [int]$RequestedCaller, [string[]]$ExpectedLaunches) {
+        Remove-Item -LiteralPath $env:SOLDER_TEST_OPENED -ErrorAction SilentlyContinue
+        $env:SOLDER_TEST_KEEP_REOPENED='1'
+        $state=New-State
+        New-SolderReopenSession $root $state $true
+        try {
+            if ($RestoreManager) {
+                $source=Start-Process -FilePath $gui -ArgumentList 'close' -PassThru
+                $children.Add($source)
+                Wait-For { $source.Refresh(); $source.MainWindowHandle -ne 0 } 'the anonymous repair source manager did not start'
+                $sourceHandle=[long]$source.MainWindowHandle
+                Close-SolderForUpdate $root $state 0 0 -StagedApp $stagedApp -CliRestoreSupported $true
+                $captured=@($state.Session.Processes | Where-Object {$_.Id -eq $source.Id})[0]
+                $record=[ordered]@{schemaVersion=1;nonce=$state.Session.Nonce;pid=$source.Id;hwnd=[string]$sourceHandle;
+                    executable=$gui;project=$project;frameType='manager';managerHwnd=[string]$sourceHandle;
+                    managerStartTime=$captured.StartFileTime;managerProject=$project;documentExisted=$true}|ConvertTo-Json -Compress
+                Write-TransactionRecord (Join-Path $state.Session.Directory ("$($source.Id)-$sourceHandle.json")) $record
+            }
+            Open-SolderUpdateWindows $root $state $gui $RequestedProject $RequestedCaller $RestoreManager
+            $opened=@([IO.File]::ReadAllLines($env:SOLDER_TEST_OPENED))
+            $processes=@(Get-SolderGuiProcesses $root)
+            Assert-Condition ($opened.Count -eq $ExpectedLaunches.Count -and
+                ($opened -join "`n") -ceq ($ExpectedLaunches -join "`n") -and
+                $processes.Count -eq $ExpectedLaunches.Count) 'a manager launch request created an extra window or suppressed an explicit launch'
+            $ids=@($processes | ForEach-Object {$_.Id} | Sort-Object)
+            Open-SolderUpdateWindows $root $state $gui $RequestedProject $RequestedCaller $RestoreManager
+            $retryOpened=@([IO.File]::ReadAllLines($env:SOLDER_TEST_OPENED))
+            $retryIds=@(Get-SolderGuiProcesses $root | ForEach-Object {$_.Id} | Sort-Object)
+            Assert-Condition ($retryOpened.Count -eq $ExpectedLaunches.Count -and
+                ($retryIds -join ',') -ceq ($ids -join ',')) 'retry duplicated a restored manager or its requested fallback'
+        } finally {
+            foreach($running in @(Get-SolderGuiProcesses $root)) {
+                $process=Get-Process -Id $running.Id -ErrorAction SilentlyContinue
+                if($process -and (-not $process.CloseMainWindow() -or -not $process.WaitForExit(10000))) {
+                    throw 'a disposable manager launch fixture did not close normally'
+                }
+            }
+            Complete-SolderReopenSession $state
+            $env:SOLDER_TEST_KEEP_REOPENED='0'
+        }
+    }
+    Assert-ManagerLaunchRequest $true '' 0 @('kicad.exe|' + $project)
+    Assert-ManagerLaunchRequest $false '' 0 @('kicad.exe|(empty)')
+    Assert-ManagerLaunchRequest $true $savedAs 0 @(('kicad.exe|' + $project), ('kicad.exe|' + $savedAs))
+    Assert-ManagerLaunchRequest $true '' 987654 @(('kicad.exe|' + $project), 'kicad.exe|(empty)')
+
     Remove-Item -LiteralPath $env:SOLDER_TEST_OPENED -ErrorAction SilentlyContinue
     $state=New-State
     New-SolderReopenSession $root $state $true

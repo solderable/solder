@@ -2487,7 +2487,14 @@ function Open-SolderUpdateWindows {
     $callerCaptured = $null -ne $callerWindow -and @($State.Session.Windows | Where-Object {
         $_.Process.Id -eq $CallerPid -and $_.Handle -eq $callerWindow.Value
     }).Count -gt 0
-    if (-not $State.CallerReopened -and -not $callerCaptured -and -not $State.Session.Opened.Contains('caller-fallback')) {
+    # The ordinary repair shortcut requests a manager without a caller window
+    # or project. An acknowledged restored manager already satisfies that
+    # request; opening a fallback would add an unwanted blank manager.
+    $anonymousManagerRestored = $CallerPid -le 0 -and [string]::IsNullOrWhiteSpace($Project) -and
+        [string]::Equals([IO.Path]::GetFileName($Executable), 'kicad.exe', [StringComparison]::OrdinalIgnoreCase) -and
+        $State.Session.Managers.Count -gt 0
+    if (-not $State.CallerReopened -and -not $callerCaptured -and -not $anonymousManagerRestored -and
+        -not $State.Session.Opened.Contains('caller-fallback')) {
         Open-SolderAfterUpdate -InstallRoot $InstallRoot -Executable $Executable -Project $Project
         [void]$State.Session.Opened.Add('caller-fallback')
     }
