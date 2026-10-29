@@ -627,6 +627,14 @@ public class GuiFixture {
     catch [OperationCanceledException] { $cancelled = $true }
     Assert-Condition $cancelled 'an editor veto did not cancel the update'
     Assert-Condition (-not $veto.HasExited) 'the vetoed window was force-closed'
+    Remove-Item -LiteralPath $env:SOLDER_TEST_OPENED -ErrorAction SilentlyContinue
+    $env:SOLDER_TEST_KEEP_REOPENED='1'
+    Open-SolderUpdateWindows $root $state $gui '' 0 $true
+    Open-SolderUpdateWindows $root $state $gui '' 0 $true
+    $afterVeto=@(Get-SolderGuiProcesses $root)
+    Assert-Condition ($state.Session.Managers.Count -eq 0 -and $afterVeto.Count -eq 1 -and
+        $afterVeto[0].Id -eq $veto.Id -and -not (Test-Path -LiteralPath $env:SOLDER_TEST_OPENED)) 'anonymous repair duplicated the original manager after a close veto'
+    $env:SOLDER_TEST_KEEP_REOPENED='0'
     Complete-SolderReopenSession $state
     Stop-Process -Id $veto.Id -Force
     [void]$veto.WaitForExit(5000)

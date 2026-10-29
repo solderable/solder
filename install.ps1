@@ -2487,13 +2487,33 @@ function Open-SolderUpdateWindows {
     $callerCaptured = $null -ne $callerWindow -and @($State.Session.Windows | Where-Object {
         $_.Process.Id -eq $CallerPid -and $_.Handle -eq $callerWindow.Value
     }).Count -gt 0
-    # The ordinary repair shortcut requests a manager without a caller window
-    # or project. An acknowledged restored manager already satisfies that
-    # request; opening a fallback would add an unwanted blank manager.
-    $anonymousManagerRestored = $CallerPid -le 0 -and [string]::IsNullOrWhiteSpace($Project) -and
-        [string]::Equals([IO.Path]::GetFileName($Executable), 'kicad.exe', [StringComparison]::OrdinalIgnoreCase) -and
-        $State.Session.Managers.Count -gt 0
-    if (-not $State.CallerReopened -and -not $callerCaptured -and -not $anonymousManagerRestored -and
+    # An anonymous repair request is satisfied by a restored manager or a
+    # captured manager that survived Cancel. kicad --frame is an editor, so
+    # verify the captured invocation as well as its live process and window.
+    $anonymousManagerSatisfied = $false
+    if ($CallerPid -le 0 -and [string]::IsNullOrWhiteSpace($Project) -and
+        [string]::Equals([IO.Path]::GetFileName($Executable), 'kicad.exe', [StringComparison]::OrdinalIgnoreCase)) {
+        $anonymousManagerSatisfied = $State.Session.Managers.Count -gt 0
+        if (-not $anonymousManagerSatisfied) {
+            foreach ($window in $State.Session.Windows) {
+                if (-not [string]::Equals([IO.Path]::GetFileName($window.Process.Path), 'kicad.exe', [StringComparison]::OrdinalIgnoreCase) -or
+                    [string]::IsNullOrWhiteSpace($window.Process.CommandLine)) { continue }
+                $arguments = @([SolderInstaller.NativePath]::SplitCommandLine($window.Process.CommandLine))
+                $frameArguments = @($arguments | Select-Object -Skip 1 | Where-Object {
+                    $_.StartsWith('-f', [StringComparison]::OrdinalIgnoreCase) -or $_.StartsWith('/f', [StringComparison]::OrdinalIgnoreCase) -or
+                    $_.StartsWith('--frame', [StringComparison]::OrdinalIgnoreCase)
+                })
+                if ($arguments.Count -gt 0 -and $frameArguments.Count -eq 0 -and
+                    (Test-SolderProcessInstance $window.Process) -and [SolderInstaller.Windows]::Exists($window.Handle) -and
+                    [SolderInstaller.Windows]::Owner($window.Handle) -eq $window.Process.Id -and
+                    [SolderInstaller.Windows]::SupportsSafeClose($window.Handle)) {
+                    $anonymousManagerSatisfied = $true
+                    break
+                }
+            }
+        }
+    }
+    if (-not $State.CallerReopened -and -not $callerCaptured -and -not $anonymousManagerSatisfied -and
         -not $State.Session.Opened.Contains('caller-fallback')) {
         Open-SolderAfterUpdate -InstallRoot $InstallRoot -Executable $Executable -Project $Project
         [void]$State.Session.Opened.Add('caller-fallback')
