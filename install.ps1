@@ -1987,7 +1987,10 @@ function Close-SolderForUpdate {
         if ($closed) { $State.ClosedAny = $true }
         Assert-CoordinatorNotCancelled $State
         Assert-SolderReopenSession $State
-        if (-not $responded) {
+        # A receiver can exit while processing WM_CLOSE, before Windows
+        # returns its response. A gone captured HWND is closed; the native
+        # record validation below still gates publication for every frame.
+        if (-not $responded -and -not $closed) {
             Fail "A SolderCAD window is not responding. The update did not proceed; wait for it to respond before retrying."
         }
         if (-not $closed) {
