@@ -506,7 +506,7 @@ public class GuiFixture {
   if (args[0]=="untitled") f.Shown += (sender,e) => {
    var unknown = new Form(); unknown.Text=""; unknown.ShowInTaskbar=false; unknown.Show(f);
   };
-  f.FormClosing += (sender,e) => { if(args[0]=="veto") e.Cancel=true; if(args[0]=="exit") Environment.Exit(0); if(args[0]=="hung") Thread.Sleep(30000); if(args[0]=="delayed") Thread.Sleep(1500); };
+  f.FormClosing += (sender,e) => { if(args[0]=="veto") e.Cancel=true; if(args[0]=="exit") { Thread.Sleep(6500); Environment.Exit(0); } if(args[0]=="hung") Thread.Sleep(30000); if(args[0]=="delayed") Thread.Sleep(1500); };
   Application.Run(f);
  }
 }
@@ -617,16 +617,17 @@ public class GuiFixture {
     Assert-Condition ($state.Session.Windows.Count -ge 2) 'an owned or hidden capable frame was not captured'
     Complete-SolderReopenSession $state
 
-    # Windows returns no SendMessageTimeout response when the receiver exits
-    # inside WM_CLOSE. The HWND is nevertheless gone. Publication must still
+    # A receiver can time out inside WM_CLOSE and then exit during the close
+    # grace. The HWND is nevertheless gone. Publication must still
     # require the same production native close-record gate as any other close.
     $exitProbe=Start-Process -FilePath $gui -ArgumentList 'exit' -PassThru
     $children.Add($exitProbe)
     Wait-For { $exitProbe.Refresh(); $exitProbe.MainWindowHandle -ne 0 } 'the receiver-exit probe did not start'
     $exitHandle=[long]$exitProbe.MainWindowHandle
     $responded=[SolderInstaller.Windows]::RequestClose($exitHandle)
-    Assert-Condition ($exitProbe.WaitForExit(5000) -and -not $responded -and
-        -not [SolderInstaller.Windows]::Exists($exitHandle)) 'the native receiver-exit probe did not exercise a missing Windows response'
+    $probeExited=$exitProbe.WaitForExit(10000)
+    $probeExists=[SolderInstaller.Windows]::Exists($exitHandle)
+    Assert-Condition ($probeExited -and -not $responded -and -not $probeExists) ("the native receiver-exit probe did not exercise a missing Windows response: responded=$responded exited=$probeExited exists=$probeExists")
     foreach($withRecord in @($true,$false)) {
         $receiver=Start-Process -FilePath $gui -ArgumentList 'exit' -PassThru
         $children.Add($receiver)
