@@ -483,6 +483,18 @@ public class GuiFixture {
  [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern bool SetPropW(IntPtr hwnd, string name, IntPtr value);
  [STAThread] public static void Main(string[] args) {
   DisableProcessWindowsGhosting();
+  Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException);
+  AppDomain.CurrentDomain.UnhandledException += (sender,eventArgs) => {
+   try {
+    var error=eventArgs.ExceptionObject as Exception;
+    string stack=error==null?"":error.StackTrace??"";
+    if(stack.Length>2000) stack=stack.Substring(0,2000);
+    Console.Error.WriteLine("fixture_unhandled_exception type="+(error==null?"unknown":error.GetType().FullName)+
+      " hresult="+(error==null?0:error.HResult)+" stack="+stack);
+    Console.Error.Flush();
+   } catch { }
+   Environment.Exit(1);
+  };
   if (args.Length == 0 || (args[0] != "close" && args[0] != "veto" && args[0] != "exit" && args[0] != "hung" && args[0] != "delayed" && args[0] != "legacy" && args[0] != "owned" && args[0] != "untitled")) {
    File.AppendAllText(Environment.GetEnvironmentVariable("SOLDER_TEST_OPENED"), Path.GetFileName(Application.ExecutablePath) + "|" + (args.Length == 0 || args[0] == "-n" ? "(empty)" : args[0]) + "\n");
    if (Environment.GetEnvironmentVariable("SOLDER_TEST_KEEP_REOPENED") != "1" && String.IsNullOrEmpty(Environment.GetEnvironmentVariable("SOLDER_UPDATE_REOPEN_MANAGER")) && Path.GetFileName(Application.ExecutablePath).Equals("kicad.exe",StringComparison.OrdinalIgnoreCase)) return;
