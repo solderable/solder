@@ -368,10 +368,14 @@ function Enter-SolderInstallLease {
             $listener = New-Object Net.Sockets.TcpListener ([Net.IPAddress]::Loopback), $port
             $listeners.Add($listener)
             $listener.ExclusiveAddressUse = $true
+            # Newer .NET re-applies ExclusiveAddressUse when Server is read;
+            # that fails once the socket is bound. Capture it before Start
+            # and use the same socket on Windows PowerShell and PowerShell 7.
+            $serverSocket = $listener.Server
             $listener.Start()
             # PowerShell 5.1 creates inheritable sockets. A reopened GUI child
             # must not keep this process lease alive after the worker exits.
-            [SolderInstaller.NativePath]::PreventInheritance($listener.Server.Handle)
+            [SolderInstaller.NativePath]::PreventInheritance($serverSocket.Handle)
         }
     } catch {
         $cause = $_.Exception
@@ -901,7 +905,13 @@ function Expand-ZipArchive {
         # ZipFile.ExtractToDirectory cannot handle an extended-length prefix on
         # Windows PowerShell 5.1. Read and extract each entry through the same
         # .NET ZIP decoder so the checked name is exactly the extracted name.
-        Add-Type -ReferencedAssemblies @([IO.Compression.ZipArchive].Assembly.Location, [IO.Compression.ZipFile].Assembly.Location) -TypeDefinition @'
+        $compilerOptions = @{}
+        if ($PSVersionTable.PSEdition -eq 'Desktop') {
+            $compilerOptions.ReferencedAssemblies = @([IO.Compression.ZipArchive].Assembly.Location, [IO.Compression.ZipFile].Assembly.Location)
+        }
+        # Core's default references include compression and must be retained;
+        # supplying only the Framework additions hides its other assemblies.
+        Add-Type @compilerOptions -TypeDefinition @'
 using System;
 using System.Collections.Generic;
 using System.IO;
