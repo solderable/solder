@@ -168,7 +168,15 @@ try {
         'lease-child-inheritance' {
             $exe=Join-Path $root 'child.exe'
             $sentinel=Join-Path $root 'child-exit'
-            Add-Type -OutputAssembly $exe -OutputType WindowsApplication -TypeDefinition 'using System.IO; using System.Threading; public static class Child { public static void Main(string[] a) { while (!File.Exists(a[0])) Thread.Sleep(50); } }'
+            # PowerShell 7 cannot emit standalone EXEs with Add-Type. Compile
+            # the fixture with the Windows PowerShell compiler, then exercise
+            # the actual installer/launcher in whichever host runs this test.
+            $source=Join-Path $root 'child.cs'
+            $compiler=Join-Path $root 'compile-child.ps1'
+            [IO.File]::WriteAllText($source,'using System.IO; using System.Threading; public static class Child { public static void Main(string[] a) { while (!File.Exists(a[0])) Thread.Sleep(50); } }')
+            [IO.File]::WriteAllText($compiler,'param([string]$Source,[string]$Output); $ErrorActionPreference="Stop"; Add-Type -Path $Source -OutputAssembly $Output -OutputType WindowsApplication')
+            & (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $compiler -Source $source -Output $exe
+            if($LASTEXITCODE -ne 0){throw 'Could not compile the lease child fixture'}
             $owner=$null;$child=$null;$next=$null
             try {
                 $owner=Enter-SolderInstallLease $root

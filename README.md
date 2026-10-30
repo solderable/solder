@@ -47,7 +47,7 @@ powershell -ExecutionPolicy Bypass -Command "Invoke-WebRequest -Uri https://raw.
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-Windows from PowerShell:
+Windows from Windows PowerShell 5.1 or PowerShell 7:
 
 ```powershell
 Invoke-WebRequest -Uri https://raw.githubusercontent.com/solderable/solder/main/install.ps1 -OutFile install.ps1
@@ -109,7 +109,9 @@ verification.
 
 Installer contracts run with `bun test __tests__/installers.test.ts __tests__/windows-install-transaction.test.ts __tests__/windows-seamless-update.test.ts`.
 CI runs the macOS shell/JXA path on macOS and the Windows path with native
-Windows PowerShell 5.1; macOS also exercises the PowerShell functions with `pwsh`.
+Windows PowerShell 5.1. Lease ownership, child-process handle inheritance, and
+installation/recovery also run on Windows with PowerShell 7.6.9. macOS exercises
+the platform-independent PowerShell functions with `pwsh`.
 The fixtures replace network responses and check archive integrity before
 installation, without installing Solder or SolderCAD.
 

@@ -27,13 +27,47 @@ jobs:
         run: bun test --timeout 30000 __tests__/installers.test.ts __tests__/windows-install-transaction.test.ts __tests__/windows-seamless-update.test.ts
 
   windows-release-recovery:
-    name: Recover an existing Windows release
+    name: Recover an existing Windows release (${{ matrix.shell }})
     runs-on: windows-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shell: [powershell, pwsh]
     steps:
       - uses: actions/checkout@v4
-      - name: Install 1.35 and repair to 1.36
+      - name: Install the tested PowerShell 7 runtime
+        if: matrix.shell == 'pwsh'
         shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $release = gh api repos/PowerShell/PowerShell/releases/tags/v7.6.9 | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot read the official PowerShell release.' }
+          $asset = @($release.assets | Where-Object name -ceq 'PowerShell-7.6.9-win-x64.zip')
+          if ($asset.Count -ne 1 -or $asset[0].digest -cnotmatch '^sha256:[0-9a-f]{64}$') { throw 'PowerShell release has no unique checksum-verified Windows archive.' }
+          $archive = Join-Path $env:RUNNER_TEMP $asset[0].name
+          gh release download v7.6.9 --repo PowerShell/PowerShell --pattern $asset[0].name --dir $env:RUNNER_TEMP
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot download the official PowerShell archive.' }
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -cne $asset[0].digest.Substring(7)) { throw 'PowerShell archive checksum mismatch.' }
+          $runtime = Join-Path $env:RUNNER_TEMP 'powershell-7.6.9'
+          Expand-Archive -LiteralPath $archive -DestinationPath $runtime
+          Add-Content -LiteralPath $env:GITHUB_PATH -Value $runtime
+      - name: Verify leases and archive safety on both runtimes
+        shell: ${{ matrix.shell }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host "Testing PowerShell $($PSVersionTable.PSVersion) / $([Environment]::Version)"
+          if ('${{ matrix.shell }}' -eq 'pwsh' -and $PSVersionTable.PSVersion -ne [version]'7.6.9') { throw 'The pinned PowerShell 7 runtime was not selected.' }
+          if ('${{ matrix.shell }}' -eq 'powershell' -and ($PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -ne 1)) { throw 'Windows PowerShell 5.1 was not selected.' }
+          & .\__tests__\windows-install-transaction.ps1 -Installer .\install.ps1 -Scenario lease
+          & .\__tests__\windows-install-transaction.ps1 -Installer .\install.ps1 -Scenario lease-child-inheritance
+          foreach ($scenario in @('long-archive-path', 'unsafe-archive', 'unicode-extra-field')) {
+            & .\__tests__\windows-install-transaction.ps1 -Installer .\install.ps1 -Scenario $scenario
+          }
+      - name: Install 1.35 and repair to 1.36
+        shell: ${{ matrix.shell }}
         run: |
           $ErrorActionPreference = 'Stop'
           function Get-Sha256([string]$Path) {
