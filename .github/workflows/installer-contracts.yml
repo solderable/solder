@@ -34,6 +34,9 @@ jobs:
       fail-fast: false
       matrix:
         shell: [powershell, pwsh]
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
     steps:
       - uses: actions/checkout@v4
       - name: Install the tested PowerShell 7 runtime
@@ -55,7 +58,6 @@ jobs:
           Expand-Archive -LiteralPath $archive -DestinationPath $runtime
           Add-Content -LiteralPath $env:GITHUB_PATH -Value $runtime
       - name: Verify leases and archive safety on both runtimes
-        shell: ${{ matrix.shell }}
         run: |
           $ErrorActionPreference = 'Stop'
           Write-Host "Testing PowerShell $($PSVersionTable.PSVersion) / $([Environment]::Version)"
@@ -67,7 +69,6 @@ jobs:
             & .\__tests__\windows-install-transaction.ps1 -Installer .\install.ps1 -Scenario $scenario
           }
       - name: Install 1.35 and repair to 1.36
-        shell: ${{ matrix.shell }}
         run: |
           $ErrorActionPreference = 'Stop'
           function Get-Sha256([string]$Path) {
