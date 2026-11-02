@@ -68,7 +68,7 @@ function Save-SolderDownload {
         $request = $client.GetAsync($Uri, [Net.Http.HttpCompletionOption]::ResponseHeadersRead, $cancel.Token)
         while (-not $request.IsCompleted) {
             if ($State.CancelRequested) { $cancel.Cancel(); Assert-CoordinatorNotCancelled $State }
-            Start-Sleep -Milliseconds 100
+            [void][Threading.Tasks.Task]::WaitAny([Threading.Tasks.Task[]]@($request), 100)
         }
         $response = $request.GetAwaiter().GetResult()
         [void]$response.EnsureSuccessStatusCode()
@@ -87,7 +87,9 @@ function Save-SolderDownload {
                     $cancel.Cancel()
                     throw [TimeoutException]::new('The update download timed out.')
                 }
-                Start-Sleep -Milliseconds 100
+                # Wake as soon as bytes arrive. A fixed sleep on every small TLS
+                # read can throttle a healthy download beyond the total timeout.
+                [void][Threading.Tasks.Task]::WaitAny([Threading.Tasks.Task[]]@($read), 100)
             }
             $count = $read.GetAwaiter().GetResult()
             if ($count -eq 0) { break }
