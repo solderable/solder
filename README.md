@@ -1,96 +1,126 @@
-# Solder CLI
+# Solder
 
-Solder is the Solderable command-line app for building electronics projects with an AI agent. The `solder` binary opens a terminal chat session, connects to the Solderable backend, and lets the agent help create or modify a local KiCad/SKiDL project from your design decisions.
+Solder helps you design electronics through chat. Use the terminal client or
+SolderCAD, the KiCad-based desktop app, to create schematics, source components,
+review a design, and edit or route a PCB.
 
-The release assets in this repository are built from Solderable's private core engine repository.
+The installers in this repository install **Solder CLI and SolderCAD together**.
+Release packages are built from Solderable's core engine and native editor
+repositories.
 
-Use Solder when you want to:
+## Current release: 1.37.1
 
-- describe a circuit you want to build
-- search for sourceable components
-- pick parts by constraints such as package, voltage, stock, and LCSC code
-- compile SKiDL into a KiCad netlist
-- generate or reroute a KiCad schematic
-- review datasheets and component details
-- iterate on a project through chat instead of editing every file by hand
+[Release notes](https://github.com/solderable/solder/releases/tag/1.37.1) ·
+[macOS Apple silicon](https://github.com/solderable/solder/releases/download/1.37.1/solder-1.37.1-macos-arm64.zip) ·
+[Windows x64](https://github.com/solderable/solder/releases/download/1.37.1/solder-1.37.1-windows-x64.zip)
+
+This release adds a saved-schematic viewer beside terminal chat, production
+exports from PCB Chat, and improvements to schematic synchronization and agent
+collaboration. SolderCAD opens with chat closed; use the editor's chat toolbar
+button to show it. Linked project deadlines also appear on the schematic drawing
+sheet.
+
+| Platform | Package |
+| --- | --- |
+| macOS on Apple silicon | `macos-arm64` |
+| Windows x64 | `windows-x64`; also runs under x64 emulation on Windows 11 ARM64 |
+
+The 1.37.1 macOS binaries are Developer ID signed but not Apple-notarized. Windows
+executables are unsigned and may show an unknown-publisher or SmartScreen prompt.
+See the release notes for build provenance and any release-specific notices.
 
 ## Install
 
-The installers download Solder CLI and SolderCAD together from the release's
-public UploadThing CDN URL. GitHub remains the release catalog and also hosts
-the same ZIP files. Before installing, both installers check the ZIP's byte
-size and SHA-256 against the GitHub release asset.
+The installers download the release's ZIP from its public UploadThing CDN URL.
+GitHub remains the release catalog and also hosts the same ZIP files. Before
+installing, both installers verify the ZIP's byte size and SHA-256 against the
+GitHub release asset.
 
-Older releases without a CDN URL continue to download from GitHub. A failed
-CDN download or invalid CDN metadata stops installation; it does not silently
-switch sources. To select GitHub yourself, pass `--download-source github` on
-macOS or `-DownloadSource GitHub` on Windows.
+Older releases without a CDN URL download from GitHub. A failed CDN download or
+invalid CDN metadata stops installation. To select GitHub explicitly, pass
+`--download-source github` on macOS or `-DownloadSource GitHub` on Windows.
 
-macOS:
+### macOS
+
+Install the latest release:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/solderable/solder/main/install.sh | bash
 ```
 
-Install a specific release:
+Install 1.37.1 specifically:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/solderable/solder/main/install.sh | bash -s -- --version 0.1.13
+curl -fsSL https://raw.githubusercontent.com/solderable/solder/main/install.sh | bash -s -- --version 1.37.1
 ```
 
-The macOS installer downloads the matching `solder-<version>-macos-<arch>.zip` release asset, installs the CLI to `~/.local/bin/solder`, and installs the single SolderCAD app copy to `~/Applications/SolderCAD.app`.
+The installer selects `solder-<version>-macos-<arch>.zip`, installs the CLI to
+`~/.local/bin/solder`, and installs SolderCAD to `~/Applications/SolderCAD.app`.
+Release 1.37.1 provides an Apple silicon package.
 
-Windows from `cmd.exe`:
+### Windows
+
+From `cmd.exe`:
 
 ```cmd
 powershell -ExecutionPolicy Bypass -Command "Invoke-WebRequest -Uri https://raw.githubusercontent.com/solderable/solder/main/install.ps1 -OutFile install.ps1"
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-Windows from Windows PowerShell 5.1 or PowerShell 7:
+From Windows PowerShell 5.1 or PowerShell 7:
 
 ```powershell
 Invoke-WebRequest -Uri https://raw.githubusercontent.com/solderable/solder/main/install.ps1 -OutFile install.ps1
-.\install.ps1
+powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-Install a specific release:
+Install 1.37.1 specifically:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.1.13
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Version 1.37.1
 ```
 
-The Windows installer downloads `solder-<version>-windows-x64.zip`, installs `solder.exe` to `$env:LOCALAPPDATA\Solder\bin`, installs the single SolderCAD copy to `$env:LOCALAPPDATA\Solder\SolderCAD`, creates **SolderCAD** and **SolderCAD Repair** desktop shortcuts, adds the installed `bin` directory to the user `PATH` if needed, sets user `KICAD_APP_PATH`, `KICAD_CLI_PATH`, and `KICAD_DISABLE_LIBRARY_PRELOAD` variables for the bundled SolderCAD tools, and clears any previous `KICAD_SOFTWARE_RENDERING` override. The SolderCAD shortcut checks essential files and offers repair when they are damaged or missing.
+The installer downloads `solder-<version>-windows-x64.zip` and installs:
 
-The x64 release also runs under emulation on Windows 11 ARM64. An interactive
-update downloads and verifies both components while SolderCAD remains open. It
-then asks the open windows to close normally, so their usual Save and Cancel
-dialogs remain in control, and reopens saved documents after installation.
-Recent Solder terminal sessions can close cooperatively. For older SolderCAD
-windows or terminal sessions that cannot prove their work is preserved, save and
-close them yourself before retrying. The installer does not forcibly close
-existing windows or sessions.
+- Solder CLI to `$env:LOCALAPPDATA\Solder\bin\solder.exe`.
+- SolderCAD to `$env:LOCALAPPDATA\Solder\SolderCAD`.
+- **SolderCAD** and **SolderCAD Repair** desktop shortcuts.
+
+It adds the installed `bin` directory to the user `PATH`, sets `KICAD_APP_PATH`,
+`KICAD_CLI_PATH`, and `KICAD_DISABLE_LIBRARY_PRELOAD`, and clears any previous
+`KICAD_SOFTWARE_RENDERING` override. The SolderCAD shortcut checks essential files
+and offers repair when they are damaged or missing. The **SolderCAD Repair**
+shortcut remains available; the old **Repair Solder** action inside native chat
+error panels was removed in 1.37.1.
+
+An interactive update downloads and verifies both components while SolderCAD
+remains open. It then asks open windows to close normally, leaving their usual
+Save and Cancel dialogs in control, and reopens saved documents after
+installation. Recent Solder terminal sessions can close cooperatively. Save and
+close older windows or sessions yourself if they cannot confirm that work is
+preserved. The installer does not forcibly close them.
+
 If installation is interrupted, run the installer again to recover the previous
-installation. Noninteractive installations still require existing windows and
-terminal sessions to be closed before starting.
-The default latest-release installation refuses to replace a known newer
-component. When an installed component's version cannot be determined, it warns
-that the selected release will replace it. An explicit `-Version` deliberately
-selects that version, including an older one.
+installation. Noninteractive installations require existing windows and terminal
+sessions to be closed before starting. Latest-release installation refuses to
+replace a known newer component; an explicit `-Version` deliberately selects
+that version, including an older one.
 
 To repair a custom installation without changing the current user's environment
-variables or desktop shortcut, specify its install directory and use
-`-NoUserIntegration`:
+variables or desktop shortcuts:
 
 ```powershell
-.\install.ps1 -InstallDir 'C:\path\to\Solder' -NoUserIntegration
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -InstallDir 'C:\path\to\Solder' -NoUserIntegration
 ```
 
-`-ManageLauncher` can be combined with `-NoUserIntegration` to migrate existing
-shortcuts belonging to that same installation to the repairable launcher; it
-does not create or replace shortcuts belonging to another installation.
+Add `-ManageLauncher` to migrate existing shortcuts belonging to that same
+installation to the repairable launcher. It does not create or replace shortcuts
+belonging to another installation.
 
-Both installers support dry-run mode:
+### Check before installing
+
+Both installers support a dry run that resolves the release and shows the
+download source, URL, byte size, and SHA-256 without downloading or installing:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/solderable/solder/main/install.sh | bash -s -- --dry-run
@@ -100,219 +130,10 @@ curl -fsSL https://raw.githubusercontent.com/solderable/solder/main/install.sh |
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -DryRun
 ```
 
-Dry runs resolve the release metadata and show the selected download URL,
-source, byte size, and SHA-256 without downloading or installing the ZIP.
+The older `install-solder-release.sh` is a separate GitHub/custom-URL installer.
+Use `install.sh` or `install.ps1` above for CDN downloads and checksum verification.
 
-The older `install-solder-release.sh` script is a separate GitHub/custom-URL
-installer. Use `install.sh` or `install.ps1` above for CDN downloads and checksum
-verification.
-
-Installer contracts run with `bun test __tests__/installers.test.ts __tests__/windows-install-transaction.test.ts __tests__/windows-seamless-update.test.ts`.
-CI runs the macOS shell/JXA path on macOS and the Windows path with native
-Windows PowerShell 5.1. Lease ownership, child-process handle inheritance, and
-installation/recovery also run on Windows with PowerShell 7.6.9. macOS exercises
-the platform-independent PowerShell functions with `pwsh`.
-The fixtures replace network responses and check archive integrity before
-installation, without installing Solder or SolderCAD.
-
-## Quick Start
-
-```bash
-solder
-```
-
-On first run, Solder asks for a Solderable API key:
-
-```text
-Solderable API key>
-```
-
-After the key is saved, the CLI opens an interactive chat prompt:
-
-```text
-you>
-```
-
-From there, describe what you want:
-
-```text
-Build a 3.3 V ESP32 sensor board with USB-C power, a battery charger, and an I2C temperature sensor.
-```
-
-Solder keeps the local project tied to the current directory. If the directory is empty or missing project scaffolding, the CLI initializes the files needed for a Solderable KiCad project.
-
-## What The Binary Does
-
-The packaged `solder` binary is a remote chat client. It does not run the full schematic agent locally. Instead, it:
-
-1. starts a terminal UI
-2. authenticates with your Solderable API key
-3. connects to the Solderable websocket service
-4. creates or reuses a local project identity in `.solder/project.json`
-5. sends your chat messages and attachments to the remote agent
-6. lets the remote agent request local project reads, writes, shell commands, and patches
-7. saves generated artifacts, such as schematics or images, back into your project directory
-
-The default server is:
-
-```text
-wss://sch.up.railway.app/remote-tui
-```
-
-The default command is just:
-
-```bash
-solder
-```
-
-## Options
-
-```bash
-solder [options]
-```
-
-| Option | Description |
-| --- | --- |
-| `--url <url>` | Connect to a different Solderable websocket server. `http` and `https` URLs are accepted and converted to websocket URLs by the transport. |
-| `--resume <id>` | Resume a previous chat session. The CLI prints a resume command when you exit after connecting. |
-| `--version`, `-v` | Print the installed `solder` version. |
-| `--help`, `-h` | Print CLI help. |
-
-Examples:
-
-```bash
-solder --version
-solder --resume session-abc123
-solder --url http://localhost:4310
-```
-
-## Local Project Files
-
-When Solder starts, it prepares the current directory as a project workspace. A typical project contains:
-
-```text
-circuit.py
-__init__.py
-circuit.net
-circuit.kicad_sch
-circuit.kicad_pro
-circuit.kicad_pcb
-sym-lib-table
-fp-lib-table
-libs/
-  Library.kicad_sym
-  Library.pretty/
-.solder/
-  project.json
-```
-
-`.solder/project.json` maps each remote server URL to a stable project ID. That lets the hosted agent know that future sessions in the same folder refer to the same local project.
-
-By default, Solder excludes client state and large/unrelated folders from remote file reads:
-
-```text
-.git/**
-.solder/**
-agent-runs/**
-node_modules/**
-.claude/**
-```
-
-## Chat Workflow
-
-You can ask Solder for design help in normal language:
-
-```text
-Find a sourceable USB-C connector suitable for hand assembly.
-```
-
-```text
-Add a buck regulator that can take 12 V input and output 3.3 V at 1 A.
-```
-
-```text
-Generate the schematic and explain any parts I still need to choose.
-```
-
-The remote agent can use local tools through the client. When needed, it can:
-
-- read selected project files
-- write generated project files
-- apply patches inside the project directory
-- run shell commands in the project directory
-- return file artifacts such as `circuit.kicad_sch`, `circuit.net`, or preview images
-
-All file operations are constrained to the active project directory.
-
-## Slash Commands
-
-The chat prompt supports slash commands for common workflows:
-
-| Command | Description |
-| --- | --- |
-| `/compile` | Compile a SKiDL file to a netlist. Defaults to `circuit.py`. |
-| `/schematic` | Generate or reroute the project schematic. |
-| `/schematic single-group` | Generate `circuit.kicad_sch` as one layout group. |
-| `/schematic fresh-layout` | Force a fresh layout pass from `circuit.net`. |
-| `/schematic regenerate` | Regenerate `circuit.kicad_sch` from `circuit.net`. |
-| `/schematic reroute` | Reroute the existing `circuit.kicad_sch`. |
-| `/mode build` | Allow the agent to build and edit the project. |
-| `/mode ask` | Ask questions without editing the project. |
-| `/style engineer` | Use precise engineering guidance. |
-| `/style concise` | Keep responses brief and direct. |
-| `/style noob` | Explain concepts for a beginner. |
-| `/model gpt-5.5` | Use GPT-5.5 fast mode with xhigh reasoning. |
-| `/model opus-4.8` | Use Opus 4.8 with high reasoning. |
-| `/datasheet status [C12345]` | Show datasheet and expert-cache status. |
-| `/datasheet populate` | Populate missing datasheet and expert caches. |
-| `/datasheet refresh C12345` | Force-refresh component expert data for a part. |
-| `/cancel` | Cancel the current run. |
-| `/exit` | Exit the chat session. |
-
-## Resuming A Session
-
-When you exit after connecting, Solder prints a command like:
-
-```bash
-solder --resume session-abc123
-```
-
-Run that command from the same project directory to continue the conversation.
-
-If you connected to a custom server, the resume command includes `--url`:
-
-```bash
-solder --url http://localhost:4310 --resume session-abc123
-```
-
-## Attachments
-
-The terminal UI can forward image and PDF attachments to the remote agent. Attachments are sent as websocket-safe payloads with filename, media type, and byte size metadata.
-
-Use attachments when asking Solder to interpret:
-
-- a datasheet excerpt
-- a pinout image
-- a reference schematic
-- a board or wiring photo
-- a screenshot of an error
-
-## Generated Artifacts
-
-When the remote agent returns files, Solder saves them locally and prints the path. By default, artifacts are written into the active project directory.
-
-Common generated files include:
-
-```text
-circuit.py
-circuit.net
-circuit.kicad_sch
-circuit.png
-```
-
-## Common Workflows
-
-Create a new project:
+## Start a project
 
 ```bash
 mkdir my-board
@@ -320,45 +141,111 @@ cd my-board
 solder
 ```
 
-Then say:
+Run `/auth` in chat to sign in through your browser with Google or your email and
+a sign-in code. The installed client uses a browser-approved device credential;
+you do not need to paste a manually issued API key.
+
+Describe what you want to build:
 
 ```text
-Create a low-power BLE environmental sensor with USB-C charging and a single-cell LiPo.
+Build a 3.3 V ESP32 sensor board with USB-C power, a battery charger, and an I2C temperature sensor.
 ```
 
-Search for a component:
+Solder initializes the project in the current directory. You can also run
+`solder init` to initialize a project without opening chat.
+
+Solder keeps circuit intent in `.sheet` files under `workfiles/`, with generated
+KiCad schematics and PCB files in the project directory. A typical project
+includes:
 
 ```text
-Find a sourceable 3.3 V regulator for 500 mA output in a small hand-solderable package.
+workfiles/
+  main.sheet
+  circuit.net
+  schematic.sync
+  libs/
+circuit.kicad_sch
+circuit.kicad_pro
+circuit.kicad_pcb
+.solder/
+  project.json
 ```
 
-Generate a schematic:
+Chat connects to Solderable's backend; the client performs project file
+operations and launches the local KiCad tools. The default connection is
+`wss://auth.solderable.dev/remote-tui`. Saved projects and generated artifacts
+remain in your project directory.
 
-```text
-Use the selected parts and generate the schematic.
+## Work in SolderCAD or the terminal
+
+Open SolderCAD from Applications on macOS or its desktop shortcut on Windows.
+Use the schematic editor's **Solder Chat** toolbar button, or the PCB editor's
+**PCB Chat** button, to open chat. Both editors start with chat closed.
+
+Ask for circuit changes, component research, or a design review. `/mode ask`
+inspects and answers without editing; `/mode build` allows edits. Saved schematic
+changes can be reconciled back into the circuit source with `/sync`.
+
+In a Ghostty terminal with at least 110 columns and 18 rows, press **F4** or click
+**Schematic** to view saved schematics beside chat. Choose sheets, pan, zoom, or
+drag the divider to resize the panes. The view refreshes after saves and does not
+edit the drawing. The image view requires Kitty graphics support and is not
+enabled inside tmux or screen.
+
+### PCB placement, routing, and production files
+
+Open a PCB in SolderCAD and use **PCB Chat**, or start from a terminal:
+
+```bash
+solder pcb --board circuit.kicad_pcb
 ```
 
-Or use the slash command:
+In Build mode, ask to place parts, route the board, or export production files.
+Release packages include the KiCadRoutingTools runtime, native router, and
+Python dependencies; no separate routing installation is required.
 
-```text
-/schematic
+Production export writes a Gerber/drill ZIP, BOM, placements, designator counts,
+and IPC netlist to the board's sibling `production/` directory. In an attached
+editor, it includes current unsaved board changes without changing the board.
+Use the agent's `run_drc` tool to check the current board and review the results
+before fabrication.
+
+## Useful commands
+
+| Command | Action |
+| --- | --- |
+| `solder --help` | Show current CLI options and chat commands. |
+| `solder --version` | Print the installed CLI version. |
+| `solder update` | Update Solder CLI and SolderCAD to the latest stable release. |
+| `solder --resume <id>` | Resume a session from the same project directory. |
+| `/auth` | Sign in through the browser or view account access. |
+| `/compile` | Compile the circuit source and generate its schematic. |
+| `/schematic` | Arrange and wire the schematic. |
+| `/schematic quality` | Choose a schematic quality level from 1 to 6. |
+| `/schematic regen [file.sheet]` | Run placement and routing again, optionally for one source sheet. |
+| `/schematic reroute` | Reroute the existing schematic. |
+| `/sync` | Reconcile saved schematic edits with circuit source. |
+| `/update-pcb preview` | Preview schematic-to-PCB changes. |
+| `/update-pcb apply` | Apply schematic-to-PCB changes. |
+| `/mode ask` / `/mode build` | Select read-only assistance or editing. |
+| `/model` | Choose an available model. |
+| `/cancel` | Cancel the current run. |
+| `/exit` | Exit chat. |
+
+For one-shot use, `solder --once` reads a prompt from standard input and exits
+after the run. Add `--plain` for the final answer or `--jsonl` for structured
+events. `--once` implies `--no-ask`; exit code 3 means further interaction is
+required.
+
+## Installer checks
+
+The installer contract suite checks release selection, archive integrity,
+Windows installation transactions, and recovery:
+
+```bash
+bun test --timeout 30000 __tests__/installers.test.ts __tests__/windows-install-transaction.test.ts __tests__/windows-seamless-update.test.ts
 ```
 
-Compile the SKiDL project:
-
-```text
-/compile
-```
-
-Reroute an existing schematic:
-
-```text
-/schematic reroute
-```
-
-Ask without editing:
-
-```text
-/mode ask
-Review this design and tell me what is risky before changing anything.
-```
+CI exercises Windows PowerShell 5.1 and PowerShell 7.6.9. The fixtures replace
+network responses and do not install Solder or SolderCAD. Public release and
+hosted-installer smoke tests provide separate evidence for downloadable builds.
