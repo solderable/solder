@@ -129,9 +129,31 @@ sha256sum -c soldercad-1.38.0-1-x86_64.pkg.tar.zst.sha256
 sudo pacman -U soldercad-1.38.0-1-x86_64.pkg.tar.zst
 ```
 
-The package installs the CLI and SolderCAD under `/opt/soldercad`. Run `solder`
-for terminal chat or `soldercad` for the desktop app. Arch packages are upgraded
+The package installs the CLI and SolderCAD under `/opt/soldercad`, with launchers
+at `/usr/bin/solder` and `/usr/bin/soldercad`. Run them as your normal user;
+`sudo` is only needed for the package installation. Arch packages are upgraded
 with `pacman -U`; the CLI's self updater does not yet support Linux.
+
+If an older installation exists in `~/.local/bin`, it can take precedence over
+the package's launchers. To use the installed package directly, run one of:
+
+```bash
+/usr/bin/solder
+env -u SOLDER_BINARY_PATH /usr/bin/soldercad
+```
+
+The desktop command above clears a possible old CLI override for that launch.
+To inspect which launchers and override your shell normally selects:
+
+```bash
+type -a solder soldercad
+printf 'SOLDER_BINARY_PATH=%s\n' "${SOLDER_BINARY_PATH-<unset>}"
+```
+
+A crash mentioning `~/.local/bin/solder-main.js` and a separate Bun executable
+is using the older JavaScript installation. The packaged CLI is the compiled
+executable at `/opt/soldercad/bin/solder`. Check the reported paths before
+changing or removing any older installation.
 
 ### Check before installing
 
