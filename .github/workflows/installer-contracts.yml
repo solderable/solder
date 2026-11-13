@@ -81,6 +81,8 @@ jobs:
             & .\__tests__\windows-install-transaction.ps1 -Installer .\install.ps1 -Scenario $scenario
           }
       - name: Install 1.35 and repair to 1.36
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
           function Get-Sha256([string]$Path) {
