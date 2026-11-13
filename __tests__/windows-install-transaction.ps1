@@ -265,7 +265,11 @@ public static class CaptureEnvironment {
                 Assert-Condition (-not (Test-Path $tx)) 'an active verifier blocked transaction recovery'
                 Assert-Condition (Test-Path $verifier) 'the verifier was not preserved'
                 Assert-Condition (-not $child.HasExited) 'recovery closed the verifier process'
-            } finally { Stop-Process -Id $child.Id -Force -ErrorAction SilentlyContinue }
+            } finally {
+                Stop-Process -Id $child.Id -Force -ErrorAction SilentlyContinue
+                if (-not $child.WaitForExit(5000)) { throw 'The disposable verifier process did not exit' }
+                $child.Dispose()
+            }
         }
         'downgrade-policy' {
             $app = Join-Path $root 'SolderCAD'
