@@ -74,17 +74,27 @@ output=""
 url=""
 authorization=""
 maximum_redirects=""
+credential_file_mode=""
+credential_in_args=false
+if [[ -n "\${GH_TOKEN:-}" && "$*" == *"\${GH_TOKEN:-}"* ]]; then credential_in_args=true; fi
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -o) output="$2"; shift 2 ;;
-    -H) if [[ "$2" == 'Authorization: '* ]]; then authorization="\${2#Authorization: }"; fi; shift 2 ;;
+    -H)
+      header="$2"
+      if [[ "$header" == @* ]]; then
+        credential_file_mode="$(stat -f %Lp "\${header#@}")"
+        header="$(cat "\${header#@}")"
+      fi
+      if [[ "$header" == 'Authorization: '* ]]; then authorization="\${header#Authorization: }"; fi
+      shift 2 ;;
     --max-redirs) maximum_redirects="$2"; shift 2 ;;
     --connect-timeout|--max-time|--max-filesize|--proto) shift 2 ;;
     -*) shift ;;
     *) url="$1"; shift ;;
   esac
 done
-printf '%s\\t%s\\t%s\\n' "$url" "$authorization" "$maximum_redirects" >> "$SOLDER_TEST_REQUESTS"
+printf '%s\\t%s\\t%s\\t%s\\t%s\\n' "$url" "$authorization" "$maximum_redirects" "$credential_in_args" "$credential_file_mode" >> "$SOLDER_TEST_REQUESTS"
 case "$url" in
   https://api.github.com/repos/solderable/solder/releases/*) cp "$SOLDER_TEST_METADATA" "$output" ;;
   *) cp "$SOLDER_TEST_ARCHIVE" "$output" ;;
@@ -97,8 +107,8 @@ esac
     scratch,
     env,
     requests: () => existsSync(requests) ? readFileSync(requests, "utf8").replace(/\r?\n$/, "").split("\n").map(line => {
-      const [url, authorization = "", maximumRedirects = ""] = line.replace(/\r$/, "").split("\t");
-      return { url, authorization, maximumRedirects };
+      const [url, authorization = "", maximumRedirects = "", credentialInArgs, credentialFileMode = ""] = line.replace(/\r$/, "").split("\t");
+      return { url, authorization, maximumRedirects, ...(credentialInArgs === undefined ? {} : { credentialInArgs, credentialFileMode }) };
     }) : [],
     cleanup: () => rmSync(scratch, { recursive: true, force: true }),
   };
@@ -223,8 +233,8 @@ for (const runtime of runtimes) {
         ? `https://github.com/solderable/solder/releases/download/1.2.3/solder-1.2.3-${platform}.zip`
         : `https://solder.ufs.sh/f/${runtime === "macOS" ? "macos" : "windows"}_123`;
       expect(result.requests).toEqual([
-        { url: "https://api.github.com/repos/solderable/solder/releases/tags/1.2.3", authorization: scenario.token ? `Bearer ${scenario.token}` : "", maximumRedirects: "0" },
-        { url, authorization: "", maximumRedirects: "" },
+        { url: "https://api.github.com/repos/solderable/solder/releases/tags/1.2.3", authorization: scenario.token ? `Bearer ${scenario.token}` : "", maximumRedirects: "0", ...(runtime === "macOS" ? { credentialInArgs: "false", credentialFileMode: scenario.token ? "600" : "" } : {}) },
+        { url, authorization: "", maximumRedirects: "", ...(runtime === "macOS" ? { credentialInArgs: "false", credentialFileMode: "" } : {}) },
       ]);
       if (scenario.token) expect(result.output + result.error).not.toContain(scenario.token);
     });

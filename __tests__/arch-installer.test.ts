@@ -29,14 +29,18 @@ function fixture() {
   // Replace only external boundaries. The actual parser, integrity checks,
   // launcher inspection, backups, and filesystem changes remain unchanged.
   writeFileSync(join(bin, "curl"), `#!/usr/bin/env python3
-import json,os,pathlib,shutil,sys
+import json,os,pathlib,shutil,stat,sys
 args=sys.argv[1:]; target=args[args.index('-o')+1]; url=args[-1]
 headers=[args[i+1] for i, arg in enumerate(args) if arg=='-H']
+header_file=next((pathlib.Path(value[1:]) for value in headers if value.startswith('@')),None)
+if header_file: headers.append(header_file.read_text().rstrip('\\n'))
 auth=next((value for value in headers if value.startswith('Authorization: ')),None)
 event={'boundary':'network','url':url}
 if auth:
  event['authorization']=auth.removeprefix('Authorization: ')
  event['maximum_redirects']=args[args.index('--max-redirs')+1] if '--max-redirs' in args else None
+ event['credential_in_args']=any(os.environ.get('GH_TOKEN','') in arg for arg in args)
+ event['credential_file_mode']=stat.S_IMODE(header_file.stat().st_mode) if header_file else None
 with open(os.environ['SOLDER_TEST_OPERATIONS'],'a') as f: f.write(json.dumps(event)+'\\n')
 if os.environ.get('SOLDER_TEST_DOWNLOAD_FAIL') and '/releases/download/' in url: sys.exit(22)
 source=os.environ['SOLDER_TEST_RELEASE'] if url.startswith('https://api.github.com/') else os.environ['SOLDER_TEST_ARCHIVE']
@@ -84,7 +88,7 @@ describe("Arch package installation", () => {
     const result = f.run({ extraEnv: { GH_TOKEN: token } });
     expect(result.code).toBe(0);
     expect(f.events().filter(event => event.boundary === "network")).toEqual([
-      { boundary: "network", url: "https://api.github.com/repos/solderable/solder/releases/latest", authorization: `Bearer ${token}`, maximum_redirects: "0" },
+      { boundary: "network", url: "https://api.github.com/repos/solderable/solder/releases/latest", authorization: `Bearer ${token}`, maximum_redirects: "0", credential_in_args: false, credential_file_mode: 0o600 },
       { boundary: "network", url: canonicalUrl },
     ]);
     expect(result.output + result.error).not.toContain(token);

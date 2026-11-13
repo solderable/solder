@@ -251,7 +251,10 @@ if [[ -n "$VERSION" ]]; then
 fi
 printf 'Reading GitHub release metadata...\n' >&2
 RELEASE_HEADERS=(-H 'Accept: application/vnd.github+json' -H 'User-Agent: solder-installer')
-if [[ -n "${GH_TOKEN:-}" ]]; then RELEASE_HEADERS+=(-H "Authorization: Bearer ${GH_TOKEN}"); fi
+if [[ -n "${GH_TOKEN:-}" ]]; then
+  (umask 077; printf 'Authorization: Bearer %s\n' "$GH_TOKEN" > "$TMP_DIR/api-authorization")
+  RELEASE_HEADERS+=(-H "@$TMP_DIR/api-authorization")
+fi
 # Keep API credentials on the canonical metadata endpoint, never a redirect.
 curl -fsSL --max-redirs 0 --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 60 --max-filesize 1048576 \
   "${RELEASE_HEADERS[@]}" \

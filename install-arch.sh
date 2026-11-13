@@ -217,7 +217,10 @@ arch_install_release() (
   if [[ -n "$requested" ]]; then api="https://api.github.com/repos/solderable/solder/releases/tags/$requested"; fi
   printf 'Reading GitHub release metadata...\n'
   headers=(-H 'Accept: application/vnd.github+json' -H 'User-Agent: solder-arch-installer')
-  if [[ -n "${GH_TOKEN:-}" ]]; then headers+=(-H "Authorization: Bearer ${GH_TOKEN}"); fi
+  if [[ -n "${GH_TOKEN:-}" ]]; then
+    (umask 077; printf 'Authorization: Bearer %s\n' "$GH_TOKEN" > "$scratch/api-authorization")
+    headers+=(-H "@$scratch/api-authorization")
+  fi
   # Never forward API credentials through a metadata redirect.
   curl -fsSL --max-redirs 0 --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 60 --max-filesize 1048576 \
     "${headers[@]}" \
