@@ -1751,12 +1751,16 @@ function Quote-SolderArgument {
 
 function Start-SolderGuiProcess {
     param([string]$Executable, [string]$WorkingDirectory, [string]$Project,
-          [bool]$NewEmptyManager = $false, [string]$ManagerHint, [string]$StandaloneHint)
+          [bool]$NewEmptyManager = $false, [string]$ManagerHint, [string]$StandaloneHint,
+          [string]$SolderExecutable)
     Initialize-SolderWindowApi
     $start = New-Object Diagnostics.ProcessStartInfo
     $start.FileName = $Executable
     $start.WorkingDirectory = $WorkingDirectory
     $start.UseShellExecute = $false
+    # Native chat must use the CLI from this installation, even when an older
+    # user CLI or override exists. Change only the child's environment.
+    if ($SolderExecutable) { $start.EnvironmentVariables['SOLDER_BINARY_PATH'] = $SolderExecutable }
     if ($Project) { $start.Arguments = Quote-SolderArgument $Project }
     elseif ($NewEmptyManager) { $start.Arguments = '-n' }
     $start.EnvironmentVariables.Remove('SOLDER_UPDATE_REOPEN_MANAGER')
@@ -1810,7 +1814,7 @@ function Open-SolderAfterUpdate {
         }
     }
     $emptyManager = -not $projectPath -and [IO.Path]::GetFileName($executablePath).Equals('kicad.exe', [StringComparison]::OrdinalIgnoreCase)
-    $process = Start-SolderGuiProcess -Executable $executablePath -WorkingDirectory ([IO.Path]::GetDirectoryName($executablePath)) -Project $projectPath -NewEmptyManager $emptyManager -ManagerHint $ManagerHint -StandaloneHint $StandaloneHint
+    $process = Start-SolderGuiProcess -Executable $executablePath -WorkingDirectory ([IO.Path]::GetDirectoryName($executablePath)) -Project $projectPath -NewEmptyManager $emptyManager -ManagerHint $ManagerHint -StandaloneHint $StandaloneHint -SolderExecutable (Join-Path $InstallRoot 'bin\solder.exe')
     $returned = $false
     try {
         if ($process.WaitForExit(2000)) {
@@ -2322,7 +2326,7 @@ function Start-SolderInstalledApp {
             if (-not [string]::IsNullOrWhiteSpace($Project)) {
                 $document = [IO.Path]::GetFullPath($Project)
             }
-            $process = Start-SolderGuiProcess -Executable $app -WorkingDirectory $InstallRoot -Project $document
+            $process = Start-SolderGuiProcess -Executable $app -WorkingDirectory $InstallRoot -Project $document -SolderExecutable (Join-Path $InstallRoot 'bin\solder.exe')
             # Normal closure and forwarding to an existing process are success.
             # A loader/startup failure is repaired once by the coordinator.
             if (-not $process.WaitForExit(2000) -or $process.ExitCode -eq 0) { return }

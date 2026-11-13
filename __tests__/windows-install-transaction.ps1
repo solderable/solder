@@ -75,6 +75,64 @@ New-Item -ItemType Directory -Path $root | Out-Null
 try {
     $root = Resolve-PhysicalPath $root
     switch ($Scenario) {
+        { $_ -in @('paired-desktop-cli', 'paired-reopened-cli') } {
+            foreach ($relative in Get-SolderLaunchFiles) {
+                $destination = Join-Path $root $relative
+                New-Item -ItemType Directory -Force -Path (Split-Path -Parent $destination) | Out-Null
+                [IO.File]::WriteAllText($destination, 'fixture-data')
+            }
+            $exe = Join-Path $root 'SolderCAD\bin\kicad.exe'
+            Remove-Item -LiteralPath $exe
+            $source = Join-Path $root 'capture-environment.cs'
+            $compiler = Join-Path $root 'compile-capture.ps1'
+            [IO.File]::WriteAllText($source, @'
+using System;
+using System.IO;
+public static class CaptureEnvironment {
+    public static void Main() {
+        File.WriteAllLines(Environment.GetEnvironmentVariable("SOLDER_TEST_CAPTURE"), new[] {
+            Environment.GetEnvironmentVariable("SOLDER_BINARY_PATH"),
+            Environment.GetEnvironmentVariable("PATH")
+        });
+    }
+}
+'@)
+            [IO.File]::WriteAllText($compiler, 'param([string]$Source,[string]$Output); $ErrorActionPreference="Stop"; Add-Type -Path $Source -OutputAssembly $Output -OutputType WindowsApplication')
+            & (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $compiler -Source $source -Output $exe
+            if ($LASTEXITCODE -ne 0) { throw 'Could not compile the child environment fixture' }
+            New-Item -ItemType Directory -Path (Join-Path $root 'repair') | Out-Null
+            Write-SolderLaunchHealth $root
+            $staleBin = Join-Path $root 'old-user-bin'
+            New-Item -ItemType Directory -Path $staleBin | Out-Null
+            $staleCli = Join-Path $staleBin 'solder.exe'
+            Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\cmd.exe') -Destination $staleCli
+            $beforePath = $env:Path
+            $beforeOverride = [Environment]::GetEnvironmentVariable('SOLDER_BINARY_PATH', 'Process')
+            $beforeCapture = [Environment]::GetEnvironmentVariable('SOLDER_TEST_CAPTURE', 'Process')
+            $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+            $userOverride = [Environment]::GetEnvironmentVariable('SOLDER_BINARY_PATH', 'User')
+            $capture = Join-Path $root 'child-environment.txt'
+            try {
+                $env:Path = $staleBin + ';' + $beforePath
+                $env:SOLDER_BINARY_PATH = $staleCli
+                $env:SOLDER_TEST_CAPTURE = $capture
+                if ($Scenario -ceq 'paired-desktop-cli') {
+                    Start-SolderInstalledApp -InstallRoot $root -RepairScriptPath (Join-Path $root 'unused-repair.ps1')
+                } else {
+                    Open-SolderAfterUpdate -InstallRoot $root -Executable $exe
+                }
+                Assert-Condition (Test-Path -LiteralPath $capture) 'the actual native child did not capture its environment'
+                $received = [IO.File]::ReadAllLines($capture)
+                Assert-Condition ($received.Count -eq 2 -and $received[0] -ceq (Join-Path $root 'bin\solder.exe')) 'the native child inherited the stale CLI instead of its paired installation'
+                Assert-Condition ($received[1] -ceq $env:Path) 'pairing unexpectedly changed the child PATH'
+                Assert-Condition ($env:SOLDER_BINARY_PATH -ceq $staleCli -and $env:Path -ceq ($staleBin + ';' + $beforePath)) 'pairing changed the parent process environment'
+                Assert-Condition ([Environment]::GetEnvironmentVariable('Path', 'User') -ceq $userPath -and [Environment]::GetEnvironmentVariable('SOLDER_BINARY_PATH', 'User') -ceq $userOverride) 'pairing changed the persistent user environment'
+            } finally {
+                $env:Path = $beforePath
+                [Environment]::SetEnvironmentVariable('SOLDER_BINARY_PATH', $beforeOverride, 'Process')
+                [Environment]::SetEnvironmentVariable('SOLDER_TEST_CAPTURE', $beforeCapture, 'Process')
+            }
+        }
         'transient-publish-lock' {
             New-TestFixture $root
             $app=Join-Path $root 'SolderCAD';$cli=Join-Path $root 'bin\solder.exe'

@@ -10,6 +10,8 @@ if (process.platform === "win32") {
   const scenarios: Record<string, string> = {
     "only one installer owns the shared lease": "lease",
     "reopened children do not inherit either installer lease": "lease-child-inheritance",
+    "desktop launches use the paired CLI without changing the user's environment": "paired-desktop-cli",
+    "reopened editors use the paired CLI without changing the user's environment": "paired-reopened-cli",
     "waits for a temporary Windows file lock before publishing": "transient-publish-lock",
     "preserves the old pair when a Windows file lock persists": "persistent-publish-lock",
     "does not move a changed source on a publication retry": "changed-source-during-move-retry",
