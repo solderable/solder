@@ -1,6 +1,6 @@
 # Solder
 
-## Install on macOS
+## Install on macOS (Apple silicon)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/solderable/solder/main/install.sh | bash
