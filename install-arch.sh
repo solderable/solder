@@ -60,7 +60,7 @@ PY
 # launchers that shadow the system package may be backed up and replaced.
 arch_user_launchers() {
   python3 - "$1" "$2" "$3" "$4" <<'PY'
-import hashlib, json, os, pathlib, re, secrets, stat, sys
+import hashlib, json, os, pathlib, secrets, shlex, stat, sys
 
 phase, home_value, path_value, plan_file = sys.argv[1:]
 home = pathlib.Path(home_value).resolve(strict=True)
@@ -96,13 +96,23 @@ def is_legacy(path, name):
     lines = [line.strip() for line in text.splitlines() if line.strip() and not line.lstrip().startswith('#')]
     if len(lines) != 1:
         return False
-    line = lines[0]
+    try:
+        args = shlex.split(lines[0])
+    except ValueError:
+        return False
+    if not text.startswith('#!') or not args or args[0] != 'exec' or args[-1] != '$@':
+        return False
     if name == 'solder':
-        return (text.startswith('#!') and line.startswith('exec ')
-                and re.search(r'(?:^|[/\s"\'])bun(?:[\s"\']|$)', line) is not None
-                and 'solder-main.js' in line)
-    return (text.startswith('#!') and line.startswith('exec ')
-            and re.search(r'(?:/opt/soldercad/bin/kicad|/usr/bin/soldercad)(?:[\s"\']|$)', line) is not None)
+        if len(args) != 4:
+            return False
+        def home_path(value):
+            for prefix in ('${HOME}/', '$HOME/'):
+                if value.startswith(prefix):
+                    return str(home / value[len(prefix):])
+            return value
+        return (home_path(args[1]) in ('bun', str(home / '.bun/bin/bun'))
+                and home_path(args[2]) == str(home / '.local/bin/solder-main.js'))
+    return len(args) == 3 and args[1] in ('/opt/soldercad/bin/kicad', '/usr/bin/soldercad')
 
 def shadows_system(name):
     for entry in path_value.split(os.pathsep):
@@ -229,6 +239,8 @@ arch_install_release() (
   elif [[ -t 0 ]]; then
     sudo pacman -U -- "$archive"
   elif [[ -r /dev/tty ]]; then
+    # The normal user opens their terminal; sudo elevates only pacman.
+    # shellcheck disable=SC2024
     sudo pacman -U -- "$archive" < /dev/tty
   else
     arch_die 'pacman confirmation needs a terminal; rerun with --yes for noninteractive installation'

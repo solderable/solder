@@ -144,8 +144,27 @@ describe("legacy user launchers", () => {
     const backup = readdirSync(f.userBin).find(name => name.startsWith(".solder-launcher-backup-"))!;
     expect(readFileSync(join(f.userBin, backup, "solder"), "utf8")).toBe(legacy);
   }));
+  test("preserves and replaces a known SolderCAD package wrapper", () => withFixture(f => {
+    const path = join(f.userBin, "soldercad");
+    const wrapper = '#!/bin/sh\nexec /opt/soldercad/bin/kicad "$@"\n';
+    writeFileSync(path, wrapper, { mode: 0o755 });
+    expect(f.run().code).toBe(0);
+    expect(readlinkSync(path)).toBe("/usr/bin/soldercad");
+    const backup = readdirSync(f.userBin).find(name => name.startsWith(".solder-launcher-backup-"))!;
+    expect(readFileSync(join(f.userBin, backup, "soldercad"), "utf8")).toBe(wrapper);
+  }));
   test("refuses an unknown user launcher before any network or install operation", () => withFixture(f => {
     const path = join(f.userBin, "solder"); const custom = '#!/bin/sh\necho custom\n'; writeFileSync(path, custom, { mode: 0o755 });
+    const result = f.run();
+    expect(result.code).toBe(1);
+    expect(result.error).toContain("not a recognized old Solder launcher");
+    expect(readFileSync(path, "utf8")).toBe(custom);
+    expect(f.events()).toEqual([]);
+  }));
+  test("preserves a custom shell command that only resembles the legacy Bun wrapper", () => withFixture(f => {
+    const path = join(f.userBin, "solder");
+    const custom = '#!/bin/sh\nexec bun "$HOME/.local/bin/solder-main.js" "$@"; echo custom\n';
+    writeFileSync(path, custom, { mode: 0o755 });
     const result = f.run();
     expect(result.code).toBe(1);
     expect(result.error).toContain("not a recognized old Solder launcher");
