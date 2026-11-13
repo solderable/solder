@@ -8,37 +8,38 @@ The installers in this repository install **Solder CLI and SolderCAD together**.
 Release packages are built from Solderable's core engine and native editor
 repositories.
 
-## Current release: 1.37.1
+## Current release: 1.38.0
 
-[Release notes](https://github.com/solderable/solder/releases/tag/1.37.1) ·
-[macOS Apple silicon](https://github.com/solderable/solder/releases/download/1.37.1/solder-1.37.1-macos-arm64.zip) ·
-[Windows x64](https://github.com/solderable/solder/releases/download/1.37.1/solder-1.37.1-windows-x64.zip)
+[Release notes](https://github.com/solderable/solder/releases/tag/1.38.0) ·
+[macOS Apple silicon](https://github.com/solderable/solder/releases/download/1.38.0/solder-1.38.0-macos-arm64.zip) ·
+[Windows x64](https://github.com/solderable/solder/releases/download/1.38.0/solder-1.38.0-windows-x64.zip) ·
+[Arch Linux x86_64](https://github.com/solderable/solder/releases/download/1.38.0/soldercad-1.38.0-1-x86_64.pkg.tar.zst)
 
-This release adds a saved-schematic viewer beside terminal chat, production
-exports from PCB Chat, and improvements to schematic synchronization and agent
-collaboration. SolderCAD opens with chat closed; use the editor's chat toolbar
-button to show it. Linked project deadlines also appear on the schematic drawing
-sheet.
+On macOS, this release adds browser sign-in and assigned projects in SolderCAD,
+project submissions to dedicated work branches, and a centered control for
+switching between schematic and PCB editors. It also includes cleaner chat
+labels and the Arch Linux package alongside the macOS and Windows downloads.
 
 | Platform | Package |
 | --- | --- |
 | macOS on Apple silicon | `macos-arm64` |
 | Windows x64 | `windows-x64`; also runs under x64 emulation on Windows 11 ARM64 |
+| Arch Linux x86_64 | `soldercad-1.38.0-1-x86_64.pkg.tar.zst`; install with `pacman -U` |
 
-The 1.37.1 macOS binaries are Developer ID signed but not Apple-notarized. Windows
+The 1.38.0 macOS binaries are Developer ID signed but not Apple-notarized. Windows
 executables are unsigned and may show an unknown-publisher or SmartScreen prompt.
 See the release notes for build provenance and any release-specific notices.
 
 ## Install
 
-The installers download the release's ZIP from its public UploadThing CDN URL.
-GitHub remains the release catalog and also hosts the same ZIP files. Before
-installing, both installers verify the ZIP's byte size and SHA-256 against the
-GitHub release asset.
+The macOS and Windows installers use the download source in the release metadata:
+UploadThing when a CDN URL is present, or GitHub otherwise. Version 1.38.0 uses
+GitHub downloads. Before installing, both installers verify the ZIP's byte size
+and SHA-256 against the GitHub release asset.
 
-Older releases without a CDN URL download from GitHub. A failed CDN download or
-invalid CDN metadata stops installation. To select GitHub explicitly, pass
-`--download-source github` on macOS or `-DownloadSource GitHub` on Windows.
+A failed CDN download or invalid CDN metadata stops installation. To select
+GitHub explicitly, pass `--download-source github` on macOS or
+`-DownloadSource GitHub` on Windows.
 
 ### macOS
 
@@ -48,15 +49,15 @@ Install the latest release:
 curl -fsSL https://raw.githubusercontent.com/solderable/solder/main/install.sh | bash
 ```
 
-Install 1.37.1 specifically:
+Install 1.38.0 specifically:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/solderable/solder/main/install.sh | bash -s -- --version 1.37.1
+curl -fsSL https://raw.githubusercontent.com/solderable/solder/main/install.sh | bash -s -- --version 1.38.0
 ```
 
 The installer selects `solder-<version>-macos-<arch>.zip`, installs the CLI to
 `~/.local/bin/solder`, and installs SolderCAD to `~/Applications/SolderCAD.app`.
-Release 1.37.1 provides an Apple silicon package.
+Release 1.38.0 provides an Apple silicon package.
 
 ### Windows
 
@@ -74,10 +75,10 @@ Invoke-WebRequest -Uri https://raw.githubusercontent.com/solderable/solder/main/
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-Install 1.37.1 specifically:
+Install 1.38.0 specifically:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -Version 1.37.1
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Version 1.38.0
 ```
 
 The installer downloads `solder-<version>-windows-x64.zip` and installs:
@@ -116,6 +117,21 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -InstallDir 'C:\path\to\S
 Add `-ManageLauncher` to migrate existing shortcuts belonging to that same
 installation to the repairable launcher. It does not create or replace shortcuts
 belonging to another installation.
+
+### Arch Linux (x86_64)
+
+Download the [pacman package](https://github.com/solderable/solder/releases/download/1.38.0/soldercad-1.38.0-1-x86_64.pkg.tar.zst)
+and its [SHA-256 file](https://github.com/solderable/solder/releases/download/1.38.0/soldercad-1.38.0-1-x86_64.pkg.tar.zst.sha256)
+into the same directory, then verify and install them:
+
+```bash
+sha256sum -c soldercad-1.38.0-1-x86_64.pkg.tar.zst.sha256
+sudo pacman -U soldercad-1.38.0-1-x86_64.pkg.tar.zst
+```
+
+The package installs the CLI and SolderCAD under `/opt/soldercad`. Run `solder`
+for terminal chat or `soldercad` for the desktop app. Arch packages are upgraded
+with `pacman -U`; the CLI's self updater does not yet support Linux.
 
 ### Check before installing
 
