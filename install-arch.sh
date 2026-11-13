@@ -273,4 +273,4 @@ arch_main() {
   arch_install_release "$version" "$dry_run" "$assume_yes" "$HOME" "$PATH"
 }
 
-if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then arch_main "$@"; fi
+if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then arch_main "$@"; fi

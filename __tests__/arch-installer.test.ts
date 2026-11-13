@@ -61,6 +61,16 @@ function withFixture(body: (f: ReturnType<typeof fixture>) => void) {
   try { body(f); } finally { f.close(); }
 }
 
+test("runs the public CLI when the installer arrives on standard input", () => {
+  // The README's curl | bash entrypoint has no BASH_SOURCE entry. Invalid
+  // arguments exercise that entrypoint without requiring Arch on the host.
+  const result = Bun.spawnSync(["bash", "-s", "--", "--not-a-real-option"], {
+    stdin: readFileSync(installer), stdout: "pipe", stderr: "pipe",
+  });
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr.toString()).toBe("error: unknown argument: --not-a-real-option\n");
+});
+
 describe("Arch package installation", () => {
   test("installs the verified Latest package before reporting success", () => withFixture(f => {
     const result = f.run();
