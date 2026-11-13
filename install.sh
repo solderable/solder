@@ -250,8 +250,11 @@ if [[ -n "$VERSION" ]]; then
   RELEASE_API_URL="https://api.github.com/repos/${REPO}/releases/tags/${VERSION}"
 fi
 printf 'Reading GitHub release metadata...\n' >&2
-curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 60 --max-filesize 1048576 \
-  -H 'Accept: application/vnd.github+json' -H 'User-Agent: solder-installer' \
+RELEASE_HEADERS=(-H 'Accept: application/vnd.github+json' -H 'User-Agent: solder-installer')
+if [[ -n "${GH_TOKEN:-}" ]]; then RELEASE_HEADERS+=(-H "Authorization: Bearer ${GH_TOKEN}"); fi
+# Keep API credentials on the canonical metadata endpoint, never a redirect.
+curl -fsSL --max-redirs 0 --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 60 --max-filesize 1048576 \
+  "${RELEASE_HEADERS[@]}" \
   -o "$TMP_DIR/release.json" "$RELEASE_API_URL" || die "failed to read GitHub release metadata"
 DOWNLOAD_DETAILS="$(resolve_release_download "$TMP_DIR/release.json")" || die "release download metadata could not be verified"
 IFS=$'\t' read -r VERSION ASSET_NAME DOWNLOAD_URL EXPECTED_SIZE EXPECTED_SHA256 RESOLVED_SOURCE <<< "$DOWNLOAD_DETAILS"

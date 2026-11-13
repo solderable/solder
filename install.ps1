@@ -154,11 +154,16 @@ function Resolve-ReleaseDownload {
         "https://api.github.com/repos/$Repo/releases/tags/$RequestedVersion"
     }
     Write-Host "Reading GitHub release metadata..."
+    $headers = @{ "User-Agent" = "solder-installer"; "Accept" = "application/vnd.github+json" }
+    if (-not [string]::IsNullOrEmpty($env:GH_TOKEN)) { $headers['Authorization'] = "Bearer $env:GH_TOKEN" }
     try {
-        $release = Invoke-RestMethod -Uri $releaseUrl -TimeoutSec 60 -Headers @{ "User-Agent" = "solder-installer"; "Accept" = "application/vnd.github+json" }
+        # Do not forward API credentials if a metadata endpoint redirects.
+        $release = Invoke-RestMethod -Uri $releaseUrl -TimeoutSec 60 -MaximumRedirection 0 -Headers $headers
     }
     catch {
-        Fail "failed to read GitHub release metadata: $($_.Exception.Message)"
+        $message = $_.Exception.Message
+        if (-not [string]::IsNullOrEmpty($env:GH_TOKEN)) { $message = $message.Replace($env:GH_TOKEN, '[redacted]') }
+        Fail "failed to read GitHub release metadata: $message"
     }
     $tag = Get-ReleaseProperty $release "tag_name"
     $draft = Get-ReleaseProperty $release "draft"

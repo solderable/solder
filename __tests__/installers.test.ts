@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import fixture from "./fixtures/release.json";
@@ -64,6 +64,7 @@ function createFixture(scenario: Scenario) {
   const archive = join(scratch, "archive.zip");
   writeFileSync(archive, "abd");
   const bin = join(scratch, "bin");
+  const requests = join(scratch, "requests.tsv");
   mkdirSync(bin);
   // Replace the external HTTP boundary. The real shell script, JSON parser,
   // metadata selection, and archive integrity checks all run unchanged.
@@ -71,39 +72,50 @@ function createFixture(scenario: Scenario) {
 set -euo pipefail
 output=""
 url=""
+authorization=""
+maximum_redirects=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -o) output="$2"; shift 2 ;;
-    -H|--connect-timeout|--max-time|--max-filesize|--proto) shift 2 ;;
+    -H) if [[ "$2" == 'Authorization: '* ]]; then authorization="\${2#Authorization: }"; fi; shift 2 ;;
+    --max-redirs) maximum_redirects="$2"; shift 2 ;;
+    --connect-timeout|--max-time|--max-filesize|--proto) shift 2 ;;
     -*) shift ;;
     *) url="$1"; shift ;;
   esac
 done
+printf '%s\\t%s\\t%s\\n' "$url" "$authorization" "$maximum_redirects" >> "$SOLDER_TEST_REQUESTS"
 case "$url" in
   https://api.github.com/repos/solderable/solder/releases/*) cp "$SOLDER_TEST_METADATA" "$output" ;;
   *) cp "$SOLDER_TEST_ARCHIVE" "$output" ;;
 esac
 `, { mode: 0o755 });
   const pathKey = Object.keys(process.env).find(key => key.toLowerCase() === "path") ?? "PATH";
+  const env = { ...process.env, [pathKey]: `${bin}${delimiter}${process.env[pathKey]}`, SOLDER_TEST_METADATA: metadata, SOLDER_TEST_ARCHIVE: archive, SOLDER_TEST_REQUESTS: requests };
+  delete env.GH_TOKEN;
   return {
     scratch,
-    env: { ...process.env, [pathKey]: `${bin}${delimiter}${process.env[pathKey]}`, SOLDER_TEST_METADATA: metadata, SOLDER_TEST_ARCHIVE: archive },
+    env,
+    requests: () => existsSync(requests) ? readFileSync(requests, "utf8").replace(/\r?\n$/, "").split("\n").map(line => {
+      const [url, authorization = "", maximumRedirects = ""] = line.replace(/\r$/, "").split("\t");
+      return { url, authorization, maximumRedirects };
+    }) : [],
     cleanup: () => rmSync(scratch, { recursive: true, force: true }),
   };
 }
 
-function runBash(scenario: Scenario, dryRun = true) {
+function runBash(scenario: Scenario, dryRun = true, token?: string) {
   const state = createFixture(scenario);
   try {
     const args = ["bash", join(root, "install.sh"), "--version", scenario.version ?? "1.2.3"];
     if (dryRun) args.push("--dry-run");
     if (scenario.source) args.push("--download-source", scenario.source);
-    const result = Bun.spawnSync(args, { env: state.env, stdout: "pipe", stderr: "pipe" });
-    return { code: result.exitCode, output: result.stdout.toString(), error: result.stderr.toString() };
+    const result = Bun.spawnSync(args, { env: { ...state.env, ...(token === undefined ? {} : { GH_TOKEN: token }) }, stdout: "pipe", stderr: "pipe" });
+    return { code: result.exitCode, output: result.stdout.toString(), error: result.stderr.toString(), requests: state.requests() };
   } finally { state.cleanup(); }
 }
 
-function runPowerShellDriver(body: string, options: { scenario?: Scenario; archiveContent?: string } = {}) {
+function runPowerShellDriver(body: string, options: { scenario?: Scenario; archiveContent?: string; token?: string; metadataError?: string } = {}) {
   const { scenario = { name: "Windows shortcut" }, archiveContent } = options;
   const state = createFixture(scenario);
   try {
@@ -122,13 +134,30 @@ if ($parseErrors.Count -ne 0) { throw $parseErrors[0].Message }
 foreach ($statement in $ast.EndBlock.Statements) {
   if ($statement -is [System.Management.Automation.Language.FunctionDefinitionAst]) { . ([scriptblock]::Create($statement.Extent.Text)) }
 }
-function Invoke-RestMethod { Get-Content -LiteralPath $env:SOLDER_TEST_METADATA -Raw | ConvertFrom-Json }
+function Save-TestRequest {
+  param($Uri, $Headers, $MaximumRedirection = '')
+  $authorization = if ($Headers.ContainsKey('Authorization')) { $Headers['Authorization'] } else { '' }
+  ('{0}{1}{2}{1}{3}' -f $Uri, [char]9, $authorization, $MaximumRedirection) | Add-Content -LiteralPath $env:SOLDER_TEST_REQUESTS
+}
+function Invoke-RestMethod {
+  param($Uri, $TimeoutSec, $Headers, $MaximumRedirection)
+  Save-TestRequest $Uri $Headers $MaximumRedirection
+  if ($env:SOLDER_TEST_METADATA_ERROR) { throw $env:SOLDER_TEST_METADATA_ERROR }
+  Get-Content -LiteralPath $env:SOLDER_TEST_METADATA -Raw | ConvertFrom-Json
+}
+function Invoke-WebRequest {
+  param($Uri, $OutFile, $TimeoutSec, $Headers)
+  Save-TestRequest $Uri $Headers
+  [IO.File]::Copy($env:SOLDER_TEST_ARCHIVE, $OutFile)
+}
 try {
 ${body}
 } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }
 `);
-    const result = Bun.spawnSync([powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", driver, join(root, "install.ps1"), scenario.version ?? "1.2.3", scenario.source ?? "Auto", archiveContent === undefined ? "no" : "yes"], { env: state.env, stdout: "pipe", stderr: "pipe" });
-    return { code: result.exitCode, output: result.stdout.toString(), error: result.stderr.toString(), scratch: state.scratch };
+    const result = Bun.spawnSync([powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", driver, join(root, "install.ps1"), scenario.version ?? "1.2.3", scenario.source ?? "Auto", archiveContent === undefined ? "no" : "yes"], {
+      env: { ...state.env, ...(options.token === undefined ? {} : { GH_TOKEN: options.token }), SOLDER_TEST_METADATA_ERROR: options.metadataError ?? "" }, stdout: "pipe", stderr: "pipe",
+    });
+    return { code: result.exitCode, output: result.stdout.toString(), error: result.stderr.toString(), scratch: state.scratch, requests: state.requests() };
   } finally { state.cleanup(); }
 }
 
@@ -171,6 +200,46 @@ for (const runtime of runtimes) {
     }
   });
 }
+
+for (const runtime of runtimes) {
+  for (const scenario of [
+    { name: "authenticated CDN download", token: "fixture-api-token" },
+    { name: "authenticated GitHub download", token: "fixture-api-token", source: "github" as const },
+    { name: "anonymous download", token: "" },
+  ]) {
+    test(`${runtime} confines credentials to the metadata API for an ${scenario.name}`, () => {
+      const result = runtime === "macOS" ? runBash(scenario, false, scenario.token) : runPowerShellDriver(`
+  $download = Resolve-ReleaseDownload -RequestedVersion $Version -Source $Source
+  $archive = Join-Path (Split-Path -Parent $env:SOLDER_TEST_METADATA) 'download.zip'
+  Save-SolderDownload -Uri $download.DownloadUrl -Destination $archive -Size $download.Size -State $null
+  Assert-ArchiveIntegrity -ArchivePath $archive -Download $download
+`, { scenario, token: scenario.token });
+      // The deliberately corrupt archive stops installation after exercising
+      // both real request sites and their separate header collections.
+      expect(result.code).toBe(1);
+      expect(result.error).toContain("SHA-256 does not match the GitHub release asset");
+      const platform = runtime === "macOS" ? `macos-${macArch}` : "windows-x64";
+      const url = scenario.source === "github"
+        ? `https://github.com/solderable/solder/releases/download/1.2.3/solder-1.2.3-${platform}.zip`
+        : `https://solder.ufs.sh/f/${runtime === "macOS" ? "macos" : "windows"}_123`;
+      expect(result.requests).toEqual([
+        { url: "https://api.github.com/repos/solderable/solder/releases/tags/1.2.3", authorization: scenario.token ? `Bearer ${scenario.token}` : "", maximumRedirects: "0" },
+        { url, authorization: "", maximumRedirects: "" },
+      ]);
+      if (scenario.token) expect(result.output + result.error).not.toContain(scenario.token);
+    });
+  }
+}
+
+test("Windows redacts the API credential from upstream failure diagnostics", () => {
+  const token = "fixture-secret-token";
+  const result = runPowerShellDriver('Resolve-ReleaseDownload -RequestedVersion $Version -Source $Source', {
+    token, metadataError: `service rejected ${token}`,
+  });
+  expect(result.code).toBe(1);
+  expect(result.error.trim()).toBe("failed to read GitHub release metadata: service rejected [redacted]");
+  expect(result.output + result.error).not.toContain(token);
+});
 
 if (process.platform === "darwin") {
   test("macOS rejects same-size altered archive bytes before extraction", () => {

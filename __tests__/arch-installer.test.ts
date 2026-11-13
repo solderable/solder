@@ -25,12 +25,19 @@ function fixture() {
   writeFileSync(archive, "abc");
   const env = { ...process.env, PATH: `${bin}:${userBin}:${process.env.PATH}`, SOLDER_TEST_RELEASE: release, SOLDER_TEST_ARCHIVE: archive, SOLDER_TEST_OPERATIONS: operations };
   delete env.SOLDER_BINARY_PATH;
+  delete env.GH_TOKEN;
   // Replace only external boundaries. The actual parser, integrity checks,
   // launcher inspection, backups, and filesystem changes remain unchanged.
   writeFileSync(join(bin, "curl"), `#!/usr/bin/env python3
 import json,os,pathlib,shutil,sys
 args=sys.argv[1:]; target=args[args.index('-o')+1]; url=args[-1]
-with open(os.environ['SOLDER_TEST_OPERATIONS'],'a') as f: f.write(json.dumps({'boundary':'network','url':url})+'\\n')
+headers=[args[i+1] for i, arg in enumerate(args) if arg=='-H']
+auth=next((value for value in headers if value.startswith('Authorization: ')),None)
+event={'boundary':'network','url':url}
+if auth:
+ event['authorization']=auth.removeprefix('Authorization: ')
+ event['maximum_redirects']=args[args.index('--max-redirs')+1] if '--max-redirs' in args else None
+with open(os.environ['SOLDER_TEST_OPERATIONS'],'a') as f: f.write(json.dumps(event)+'\\n')
 if os.environ.get('SOLDER_TEST_DOWNLOAD_FAIL') and '/releases/download/' in url: sys.exit(22)
 source=os.environ['SOLDER_TEST_RELEASE'] if url.startswith('https://api.github.com/') else os.environ['SOLDER_TEST_ARCHIVE']
 shutil.copyfile(source,target)
@@ -72,6 +79,16 @@ test("runs the public CLI when the installer arrives on standard input", () => {
 });
 
 describe("Arch package installation", () => {
+  test("keeps API credentials off package downloads and installer output", () => withFixture(f => {
+    const token = "fixture-arch-api-token";
+    const result = f.run({ extraEnv: { GH_TOKEN: token } });
+    expect(result.code).toBe(0);
+    expect(f.events().filter(event => event.boundary === "network")).toEqual([
+      { boundary: "network", url: "https://api.github.com/repos/solderable/solder/releases/latest", authorization: `Bearer ${token}`, maximum_redirects: "0" },
+      { boundary: "network", url: canonicalUrl },
+    ]);
+    expect(result.output + result.error).not.toContain(token);
+  }));
   test("installs the verified Latest package before reporting success", () => withFixture(f => {
     const result = f.run();
     expect(result.code).toBe(0);

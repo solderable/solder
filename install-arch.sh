@@ -207,6 +207,7 @@ arch_install_release() (
   set -euo pipefail
   local requested="$1" dry_run="$2" assume_yes="$3" user_home="$4" user_path="$5"
   local api details tag name url size digest actual archive
+  local -a headers
   # This function already has a subshell scope. Keep the cleanup path alive
   # while Bash unwinds locals before running the EXIT trap.
   scratch="$(mktemp -d)"
@@ -215,8 +216,11 @@ arch_install_release() (
   api='https://api.github.com/repos/solderable/solder/releases/latest'
   if [[ -n "$requested" ]]; then api="https://api.github.com/repos/solderable/solder/releases/tags/$requested"; fi
   printf 'Reading GitHub release metadata...\n'
-  curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 60 --max-filesize 1048576 \
-    -H 'Accept: application/vnd.github+json' -H 'User-Agent: solder-arch-installer' \
+  headers=(-H 'Accept: application/vnd.github+json' -H 'User-Agent: solder-arch-installer')
+  if [[ -n "${GH_TOKEN:-}" ]]; then headers+=(-H "Authorization: Bearer ${GH_TOKEN}"); fi
+  # Never forward API credentials through a metadata redirect.
+  curl -fsSL --max-redirs 0 --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 60 --max-filesize 1048576 \
+    "${headers[@]}" \
     -o "$scratch/release.json" "$api" || arch_die 'failed to read GitHub release metadata'
   details="$(arch_resolve_download "$scratch/release.json" "$requested")" || exit 1
   IFS=$'\t' read -r tag name url size digest <<< "$details"
