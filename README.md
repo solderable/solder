@@ -19,7 +19,7 @@ Open **SolderCAD** from your desktop, or run `solder` for terminal chat.
 
 ## Install on Arch Linux (x86_64)
 
-Requires `curl`, `python`, and `sudo`.
+Requires `curl`, Python 3, and `sudo`.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/solderable/solder/main/install-arch.sh | bash

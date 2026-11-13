@@ -8,32 +8,32 @@ The installers in this repository install **Solder CLI and SolderCAD together**.
 Release packages are built from Solderable's core engine and native editor
 repositories.
 
-## Release 1.38.0
+## Release 1.38.1
 
-[Release notes](https://github.com/solderable/solder/releases/tag/1.38.0) ·
-[macOS Apple silicon](https://github.com/solderable/solder/releases/download/1.38.0/solder-1.38.0-macos-arm64.zip) ·
-[Windows x64](https://github.com/solderable/solder/releases/download/1.38.0/solder-1.38.0-windows-x64.zip) ·
-[Arch Linux x86_64](https://github.com/solderable/solder/releases/download/1.38.0/soldercad-1.38.0-1-x86_64.pkg.tar.zst)
+[Release notes](https://github.com/solderable/solder/releases/tag/1.38.1) ·
+[macOS Apple silicon](https://github.com/solderable/solder/releases/download/1.38.1/solder-1.38.1-macos-arm64.zip) ·
+[Windows x64](https://github.com/solderable/solder/releases/download/1.38.1/solder-1.38.1-windows-x64.zip) ·
+[Arch Linux x86_64](https://github.com/solderable/solder/releases/download/1.38.1/soldercad-1.38.1-1-x86_64.pkg.tar.zst)
 
-On macOS, this release adds browser sign-in and assigned projects in SolderCAD,
-project submissions to dedicated work branches, and a centered control for
-switching between schematic and PCB editors. It also includes cleaner chat
-labels and the Arch Linux package alongside the macOS and Windows downloads.
+This patch release improves installation and launch reliability. The Arch
+installer verifies the package and repairs recognized legacy launchers. Windows
+desktop and update-reopen launches select the CLI paired with that installation.
+All three platforms include the compiled CLI and SolderCAD.
 
 | Platform | Package |
 | --- | --- |
 | macOS on Apple silicon | `macos-arm64` |
 | Windows x64 | `windows-x64`; also runs under x64 emulation on Windows 11 ARM64 |
-| Arch Linux x86_64 | `soldercad-1.38.0-1-x86_64.pkg.tar.zst`; install with `pacman -U` |
+| Arch Linux x86_64 | `soldercad-1.38.1-1-x86_64.pkg.tar.zst`; install with `pacman -U` |
 
-The 1.38.0 macOS binaries are Developer ID signed but not Apple-notarized. Windows
+The 1.38.1 macOS binaries are Developer ID signed but not Apple-notarized. Windows
 executables are unsigned and may show an unknown-publisher or SmartScreen prompt.
 See the release notes for build provenance and any release-specific notices.
 
 ## Install
 
 The macOS and Windows installers use the download source in the release metadata:
-UploadThing when a CDN URL is present, or GitHub otherwise. Version 1.38.0 uses
+UploadThing when a CDN URL is present, or GitHub otherwise. Version 1.38.1 uses
 GitHub downloads. Before installing, both installers verify the ZIP's byte size
 and SHA-256 against the GitHub release asset.
 
@@ -49,15 +49,15 @@ Install the latest release:
 curl -fsSL https://raw.githubusercontent.com/solderable/solder/main/install.sh | bash
 ```
 
-Install 1.38.0 specifically:
+Install 1.38.1 specifically:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/solderable/solder/main/install.sh | bash -s -- --version 1.38.0
+curl -fsSL https://raw.githubusercontent.com/solderable/solder/main/install.sh | bash -s -- --version 1.38.1
 ```
 
 The installer selects `solder-<version>-macos-<arch>.zip`, installs the CLI to
 `~/.local/bin/solder`, and installs SolderCAD to `~/Applications/SolderCAD.app`.
-Release 1.38.0 provides an Apple silicon package.
+Release 1.38.1 provides an Apple silicon package.
 
 ### Windows
 
@@ -75,10 +75,10 @@ Invoke-WebRequest -Uri https://raw.githubusercontent.com/solderable/solder/main/
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-Install 1.38.0 specifically:
+Install 1.38.1 specifically:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -Version 1.38.0
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Version 1.38.1
 ```
 
 The installer downloads `solder-<version>-windows-x64.zip` and installs:
@@ -120,7 +120,7 @@ belonging to another installation.
 
 ### Arch Linux (x86_64)
 
-The Arch installer requires `curl`, `python`, and `sudo`. It downloads the
+The Arch installer requires `curl`, Python 3 (the `python` package), and `sudo`. It downloads the
 native pacman package for the latest release, verifies its byte size and SHA-256,
 and installs the CLI and SolderCAD together:
 
@@ -131,7 +131,7 @@ curl -fsSL https://raw.githubusercontent.com/solderable/solder/main/install-arch
 Install a specific release or inspect the plan without changing your system:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/solderable/solder/main/install-arch.sh | bash -s -- --version 1.38.0
+curl -fsSL https://raw.githubusercontent.com/solderable/solder/main/install-arch.sh | bash -s -- --version 1.38.1
 curl -fsSL https://raw.githubusercontent.com/solderable/solder/main/install-arch.sh | bash -s -- --dry-run
 ```
 
@@ -144,8 +144,8 @@ For manual installation, download the `.pkg.tar.zst` and its `.sha256` file from
 the release page into the same directory, then verify and install them:
 
 ```bash
-sha256sum -c soldercad-1.38.0-1-x86_64.pkg.tar.zst.sha256
-sudo pacman -U soldercad-1.38.0-1-x86_64.pkg.tar.zst
+sha256sum -c soldercad-1.38.1-1-x86_64.pkg.tar.zst.sha256
+sudo pacman -U soldercad-1.38.1-1-x86_64.pkg.tar.zst
 ```
 
 An older `~/.local/bin/solder` can shadow `/usr/bin/solder`. The installer
@@ -173,7 +173,7 @@ executable at `/opt/soldercad/bin/solder`.
 
 ### Check before installing
 
-Both installers support a dry run that resolves the release and shows the
+The macOS and Windows installers support a dry run that resolves the release and shows the
 download source, URL, byte size, and SHA-256 without downloading or installing:
 
 ```bash
