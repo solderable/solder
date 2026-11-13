@@ -10,6 +10,18 @@ permissions:
   contents: read
 
 jobs:
+  arch-download-contracts:
+    name: Arch release and launcher contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Verify package integrity and legacy launcher migration
+        run: bun test --timeout 30000 __tests__/arch-installer.test.ts
+
   download-contracts:
     name: Download contracts (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
